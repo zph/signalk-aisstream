@@ -11,6 +11,10 @@ import { navigationalStatus, vesselType, atonType } from './lookups';
 const VESSEL_CONTEXT_PREFIX = 'vessels.urn:mrn:imo:mmsi:';
 const ATON_CONTEXT_PREFIX = 'atons.urn:mrn:imo:mmsi:';
 
+function isValidTrueHeading(heading: number): boolean {
+  return heading >= 0 && heading < 360;
+}
+
 export function buildSignalKDelta(
   data: AisStreamMessage,
   pluginId: string,
@@ -127,7 +131,7 @@ export function buildSignalKDelta(
     });
   }
 
-  if (heading !== undefined && heading !== null) {
+  if (heading !== undefined && heading !== null && isValidTrueHeading(heading)) {
     values.push({
       path: 'navigation.headingTrue',
       value: transform(heading, 'deg', 'rad'),

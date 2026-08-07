@@ -3,6 +3,9 @@
   "version": "0.9.0",
   "description": "Track the worlds vessels (AIS) via websocket. Easy to configure and use.",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "clean": "rimraf dist",
     "build": "npm run clean && tsc",
@@ -16,6 +19,11 @@
     "signalk-node-server-plugin",
     "signalk-category-ais"
   ],
+  "signalk": {
+    "screenshots": [
+      "./doc/config.jpg"
+    ]
+  },
   "repository": "https://github.com/KEGustafsson/signalk-aisstream",
   "author": "Karl-Erik Gustafsson",
   "license": "MIT",

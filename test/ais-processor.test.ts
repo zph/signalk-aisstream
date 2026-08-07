@@ -102,6 +102,24 @@ describe('buildSignalKDelta', () => {
       expect(heading).toBeCloseTo(0.8203, 3);
     });
 
+    it('omits heading when AIS reports 511 (not available)', () => {
+      const msg = structuredClone(positionReportMessage);
+      if (msg.Message.PositionReport) {
+        msg.Message.PositionReport.TrueHeading = 511;
+      }
+      const delta = buildSignalKDelta(msg, PLUGIN_ID);
+      expect(findValue(delta, 'navigation.headingTrue')).toBeUndefined();
+    });
+
+    it('omits heading values outside the AIS true heading range', () => {
+      const msg = structuredClone(positionReportMessage);
+      if (msg.Message.PositionReport) {
+        msg.Message.PositionReport.TrueHeading = 360;
+      }
+      const delta = buildSignalKDelta(msg, PLUGIN_ID);
+      expect(findValue(delta, 'navigation.headingTrue')).toBeUndefined();
+    });
+
     it('maps navigational status to string', () => {
       const delta = buildSignalKDelta(positionReportMessage, PLUGIN_ID);
       expect(findValue(delta, 'navigation.state')).toBe('motoring');
