@@ -5,6 +5,8 @@ SignalK plugin to track the worlds vessels via websocket.
 - Easy to configure and use.
 - Using data source from https://aisstream.io/
 
+![Plugin configuration](./doc/config.jpg)
+
 ## Steps to take plugin in use
 1) Create account: https://aisstream.io/authenticate
 2) API Keys -> Create New API Key
@@ -25,7 +27,7 @@ https://aisstream.io/coverage
 https://aisstream.io/documentation
 
 ### Prerequisites
-- Node.js 18+
+- Node.js 20+
 - npm
 
 ### Setup
@@ -63,6 +65,8 @@ test/
 ```
 
 ## Changes
+- v0.9.1, documentation and package metadata updates
+- v0.9.0, Signal K App Store metadata, reusable CI workflow, and AIS true heading validation
 - v0.8.0, guard position subscription delta handling
 - v0.7.2, Dynamic reconnection at startup
 - v0.7.1, WebSocket startup fix
