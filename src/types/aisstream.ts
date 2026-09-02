@@ -219,7 +219,7 @@ export interface AisStreamMessage {
 }
 
 export interface SubscriptionMessage {
-  APIkey: string;
+  APIKey: string;
   BoundingBoxes: number[][][];
   FilterMessageTypes: AisMessageType[];
   FiltersShipMMSI?: string[];

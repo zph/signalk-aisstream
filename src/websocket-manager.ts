@@ -141,7 +141,7 @@ export class WebSocketManager {
     if (!this.socket || !this.boundingBox) return;
 
     const subscription: SubscriptionMessage = {
-      APIkey: this.apiKey,
+      APIKey: this.apiKey,
       BoundingBoxes: [[
         [this.boundingBox[0].latitude, this.boundingBox[0].longitude],
         [this.boundingBox[1].latitude, this.boundingBox[1].longitude],

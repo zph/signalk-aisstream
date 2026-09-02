@@ -64,6 +64,23 @@ export interface SignalKApp {
   };
 }
 
+export interface SignalKResponse {
+  json: (value: unknown) => void;
+  set: (name: string, value: string) => SignalKResponse;
+  status: (code: number) => SignalKResponse;
+}
+
+export type SignalKRouteHandler = (
+  request: { query?: Record<string, unknown> },
+  response: SignalKResponse,
+) => void;
+
+export interface SignalKRouter {
+  access: (level: 'readonly') => {
+    get: (path: string, handler: SignalKRouteHandler) => void;
+  };
+}
+
 export interface PluginOptions {
   apiKey: string;
   boundingBoxSize: number;
@@ -85,4 +102,6 @@ export interface SignalKPlugin {
   start: (options: PluginOptions) => void;
   stop: () => void;
   schema: Record<string, unknown>;
+  registerWithRouter?: (router: SignalKRouter) => void;
+  getOpenApi?: () => Record<string, unknown>;
 }

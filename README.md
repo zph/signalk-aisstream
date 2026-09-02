@@ -4,6 +4,7 @@
 SignalK plugin to track the worlds vessels via websocket.
 - Easy to configure and use.
 - Using data source from https://aisstream.io/
+- Keeps the primary area centered on the vessel while offering a separate destination-review feed.
 
 ![Plugin configuration](./doc/config.jpg)
 
@@ -19,6 +20,21 @@ SignalK plugin to track the worlds vessels via websocket.
 3) Define procentual value of movement compared to bounding box size, before bounding box location is renewed
 4) Define refresh rate of own vessel location check 
 5) Select Reports
+
+## Destination review API
+
+Chartplotters can request a second, temporary AISStream area without moving the primary subscription
+away from the vessel:
+
+```text
+GET /plugins/signalk-aisstream/api/destination?bbox=[west,south,east,north]
+```
+
+The bounding box must span no more than five degrees in either direction. The response contains up
+to 1,000 recent vessel positions plus bounded 30-minute movement summaries for dwell and swing
+analysis. Requests update one shared destination subscription, are rate-limited to the AISStream
+replacement limit, and stop after five minutes without a request. The API key remains inside the
+plugin and is never returned to the client.
 
 ## Data source coverage
 https://aisstream.io/coverage

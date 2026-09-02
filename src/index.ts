@@ -28,6 +28,7 @@ import { SignalKApp, SignalKPlugin, PluginOptions } from './types/signalk';
 import { AisMessageType } from './types/aisstream';
 import { WebSocketManager, BoundingBox } from './websocket-manager';
 import { buildSignalKDelta } from './ais-processor';
+import { DestinationAisReview, parseDestinationBbox } from './destination-review';
 
 function toBoundingBox(bounds: { latitude: number; longitude: number }[]): BoundingBox {
   return [
@@ -88,6 +89,7 @@ function createPlugin(app: SignalKApp): SignalKPlugin {
   let oldLat: number | null = null;
   let boundingBox: BoundingBox | null = null;
   let wsManager: WebSocketManager | null = null;
+  let destinationReview: DestinationAisReview | null = null;
 
   plugin.start = function (options: PluginOptions): void {
     app.debug('AisStream Plugin Started');
@@ -131,6 +133,10 @@ function createPlugin(app: SignalKApp): SignalKPlugin {
         onError: (msg) => app.error(msg),
       },
     );
+    destinationReview = new DestinationAisReview(options.apiKey, {
+      onDebug: (msg) => app.debug(`[destination] ${msg}`),
+      onError: (msg) => app.error(`[destination] ${msg}`),
+    });
 
     // Attempt immediate start using current position if available
     if (app.getSelfPath && messageTypes.length > 0) {
@@ -243,6 +249,8 @@ function createPlugin(app: SignalKApp): SignalKPlugin {
       wsManager.stop();
       wsManager = null;
     }
+    destinationReview?.stop();
+    destinationReview = null;
 
     oldLon = null;
     oldLat = null;
@@ -313,6 +321,36 @@ function createPlugin(app: SignalKApp): SignalKPlugin {
         title: 'BaseStationReport',
       },
     },
+  };
+
+  plugin.registerWithRouter = function (router): void {
+    router.access('readonly').get('/api/destination', (request, response) => {
+      const bbox = parseDestinationBbox(request.query?.bbox);
+      if (!bbox) {
+        response.status(400).json({ error: 'A valid destination bbox is required.' });
+        return;
+      }
+      if (!destinationReview) {
+        response.status(503).json({ error: 'AISStream is not configured or running.' });
+        return;
+      }
+      response.set('Cache-Control', 'no-store');
+      response.json(destinationReview.request(bbox));
+    });
+  };
+
+  plugin.getOpenApi = function (): Record<string, unknown> {
+    return {
+      openapi: '3.0.3',
+      info: { title: 'Signal K AISStream destination API', version: '1.0.0' },
+      paths: {
+        '/api/destination': {
+          get: {
+            summary: 'Read a bounded remote AIS snapshot for destination review',
+          },
+        },
+      },
+    };
   };
 
   return plugin;
