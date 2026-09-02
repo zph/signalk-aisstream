@@ -19,9 +19,20 @@ export function buildSignalKDelta(
   data: AisStreamMessage,
   pluginId: string,
 ): SignalKDelta | null {
+  const msg = data.Message;
   const mmsi = data.MetaData?.MMSI;
-  const longitude = data.MetaData?.longitude;
-  const latitude = data.MetaData?.latitude;
+  const longitude =
+    data.MetaData?.longitude ??
+    data.MetaData?.Longitude ??
+    msg.PositionReport?.Longitude ??
+    msg.StandardClassBPositionReport?.Longitude ??
+    msg.ExtendedClassBPositionReport?.Longitude;
+  const latitude =
+    data.MetaData?.latitude ??
+    data.MetaData?.Latitude ??
+    msg.PositionReport?.Latitude ??
+    msg.StandardClassBPositionReport?.Latitude ??
+    msg.ExtendedClassBPositionReport?.Latitude;
 
   if (
     mmsi === undefined || mmsi === null || mmsi === 0 ||
@@ -30,8 +41,6 @@ export function buildSignalKDelta(
   ) {
     return null;
   }
-
-  const msg = data.Message;
 
   const cog =
     msg.PositionReport?.Cog ??

@@ -106,7 +106,23 @@ describe('destination AIS review', () => {
     test.review.stop();
   });
 
-  it('rate-limits replacement subscriptions and clears the prior area', () => {
+  it('accepts the current uppercase MetaData position fields', () => {
+    const test = harness();
+    const message = structuredClone(positionReportMessage);
+    message.MetaData.Latitude = message.MetaData.latitude;
+    message.MetaData.Longitude = message.MetaData.longitude;
+    delete message.MetaData.latitude;
+    delete message.MetaData.longitude;
+    test.review.request(BOX);
+    test.callbacks().onMessage(message);
+    expect(test.review.request(BOX).targets[0]?.position).toEqual({
+      latitude: 57.6721,
+      longitude: 11.8365,
+    });
+    test.review.stop();
+  });
+
+  it('rate-limits replacement subscriptions and lets prior targets age out', () => {
     vi.useFakeTimers();
     const test = harness();
     test.review.request(BOX);
@@ -115,12 +131,13 @@ describe('destination AIS review', () => {
       { latitude: 43, longitude: -72 },
       { latitude: 42, longitude: -71 },
     ];
-    expect(test.review.request(next)).toMatchObject({ state: 'connecting', targets: [] });
+    expect(test.review.request(next)).toMatchObject({ state: 'connecting' });
+    expect(test.review.request(next).targets).toHaveLength(1);
     expect(test.updateBoundingBox).not.toHaveBeenCalled();
     test.advance(1_100);
     vi.advanceTimersByTime(1_100);
     expect(test.updateBoundingBox).toHaveBeenCalledWith(next);
-    expect(test.review.request(next).targets).toEqual([]);
+    expect(test.review.request(next).targets).toHaveLength(1);
     test.review.stop();
     vi.useRealTimers();
   });

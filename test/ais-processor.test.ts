@@ -63,6 +63,19 @@ describe('buildSignalKDelta', () => {
       });
     });
 
+    it('accepts the current uppercase MetaData position fields', () => {
+      const message = structuredClone(positionReportMessage);
+      message.MetaData.Latitude = message.MetaData.latitude;
+      message.MetaData.Longitude = message.MetaData.longitude;
+      delete message.MetaData.latitude;
+      delete message.MetaData.longitude;
+      const delta = buildSignalKDelta(message, PLUGIN_ID);
+      expect(findValue(delta, 'navigation.position')).toEqual({
+        longitude: 11.8365,
+        latitude: 57.6721,
+      });
+    });
+
     it('converts COG from degrees to radians', () => {
       const delta = buildSignalKDelta(positionReportMessage, PLUGIN_ID);
       const cog = findValue(delta, 'navigation.courseOverGroundTrue');

@@ -62,6 +62,7 @@ export class WebSocketManager {
   start(boundingBox: BoundingBox): void {
     this.stopped = false;
     this.boundingBox = boundingBox;
+    if (this.socket || this.reconnectTimer) return;
     this.connect();
   }
 
@@ -84,7 +85,7 @@ export class WebSocketManager {
   }
 
   private connect(): void {
-    if (this.stopped || !this.boundingBox || this.messageTypes.length === 0) {
+    if (this.stopped || this.socket || !this.boundingBox || this.messageTypes.length === 0) {
       return;
     }
 

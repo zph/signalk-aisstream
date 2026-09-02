@@ -7,8 +7,10 @@
 
 export interface AisStreamMetaData {
   MMSI: number;
-  longitude: number;
-  latitude: number;
+  longitude?: number;
+  latitude?: number;
+  Longitude?: number;
+  Latitude?: number;
   time_utc: string;
   ShipName: string;
 }

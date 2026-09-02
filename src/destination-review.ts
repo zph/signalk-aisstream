@@ -76,6 +76,8 @@ function navigationState(code: unknown): 'anchored' | 'moored' | undefined {
 function positionReport(message: AisStreamMessage): {
   Sog?: number;
   NavigationalStatus?: number;
+  Latitude?: number;
+  Longitude?: number;
 } | undefined {
   return (
     message.Message.PositionReport ??
@@ -88,8 +90,8 @@ function parseTarget(message: AisStreamMessage, now: number): Omit<TrackedTarget
   const report = positionReport(message);
   if (!report) return undefined;
   const mmsi = String(message.MetaData?.MMSI ?? '');
-  const latitude = message.MetaData?.latitude;
-  const longitude = message.MetaData?.longitude;
+  const latitude = message.MetaData?.latitude ?? message.MetaData?.Latitude ?? report.Latitude;
+  const longitude = message.MetaData?.longitude ?? message.MetaData?.Longitude ?? report.Longitude;
   if (
     !/^\d{9}$/u.test(mmsi) ||
     !finiteInRange(latitude, -90, 90) ||
@@ -244,7 +246,6 @@ export class DestinationAisReview {
   request(bbox: BoundingBox): DestinationSnapshot {
     this.resetIdleTimer();
     if (!this.manager.isConnected) {
-      this.targets.clear();
       this.bbox = bbox;
       this.pendingBbox = null;
       this.state = 'connecting';
@@ -252,7 +253,6 @@ export class DestinationAisReview {
       this.lastUpdateAt = this.now();
     } else if (!sameBbox(this.bbox, bbox)) {
       this.pendingBbox = bbox;
-      this.targets.clear();
       this.state = 'connecting';
       this.scheduleUpdate();
     }
@@ -314,7 +314,6 @@ export class DestinationAisReview {
       const bbox = this.pendingBbox;
       this.pendingBbox = null;
       if (!bbox || sameBbox(this.bbox, bbox)) return;
-      this.targets.clear();
       this.bbox = bbox;
       this.state = 'connecting';
       this.manager.updateBoundingBox(bbox);
