@@ -200,6 +200,22 @@ function sameBbox(left: BoundingBox | null, right: BoundingBox): boolean {
   );
 }
 
+function bboxContains(
+  bbox: BoundingBox,
+  position: { latitude: number; longitude: number },
+): boolean {
+  const north = Math.max(bbox[0].latitude, bbox[1].latitude);
+  const south = Math.min(bbox[0].latitude, bbox[1].latitude);
+  const east = Math.max(bbox[0].longitude, bbox[1].longitude);
+  const west = Math.min(bbox[0].longitude, bbox[1].longitude);
+  return (
+    position.latitude >= south &&
+    position.latitude <= north &&
+    position.longitude >= west &&
+    position.longitude <= east
+  );
+}
+
 export class DestinationAisReview {
   private readonly manager: ReturnType<DestinationManagerFactory>;
   private readonly targets = new Map<string, TrackedTarget>();
@@ -256,7 +272,7 @@ export class DestinationAisReview {
       this.state = 'connecting';
       this.scheduleUpdate();
     }
-    return this.snapshot();
+    return this.snapshot(bbox);
   }
 
   stop(): void {
@@ -289,7 +305,7 @@ export class DestinationAisReview {
     }
   }
 
-  private snapshot(): DestinationSnapshot {
+  private snapshot(bbox: BoundingBox): DestinationSnapshot {
     const now = this.now();
     for (const [mmsi, target] of this.targets) {
       while (target.samples[0] && now - target.samples[0].at > HISTORY_MS) {
@@ -302,7 +318,9 @@ export class DestinationAisReview {
     return {
       state: this.state,
       error: this.error,
-      targets: [...this.targets.values()].map(summarize),
+      targets: [...this.targets.values()]
+        .filter((target) => bboxContains(bbox, target.position))
+        .map(summarize),
     };
   }
 

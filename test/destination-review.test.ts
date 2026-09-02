@@ -9,8 +9,8 @@ import { BoundingBox, WebSocketManagerCallbacks } from '../src/websocket-manager
 import { positionReportMessage, standardClassBMessage } from './fixtures/messages';
 
 const BOX: BoundingBox = [
-  { latitude: 42, longitude: -71 },
-  { latitude: 41, longitude: -70 },
+  { latitude: 58, longitude: 11 },
+  { latitude: 57, longitude: 12 },
 ];
 
 function harness() {
@@ -63,7 +63,7 @@ function harness() {
 
 describe('destination AIS review', () => {
   it('validates and converts a bounded GeoJSON bbox', () => {
-    expect(parseDestinationBbox('[-71,41,-70,42]')).toEqual(BOX);
+    expect(parseDestinationBbox('[11,57,12,58]')).toEqual(BOX);
     expect(parseDestinationBbox('[-180,-90,180,90]')).toBeUndefined();
     expect(parseDestinationBbox('[0,0,0,1]')).toBeUndefined();
     expect(parseDestinationBbox('not-json')).toBeUndefined();
@@ -97,8 +97,11 @@ describe('destination AIS review', () => {
 
   it('accepts Class B positions without inventing a navigation state', () => {
     const test = harness();
+    const message = structuredClone(standardClassBMessage);
+    message.MetaData.latitude = 57.5;
+    message.MetaData.longitude = 11.5;
     test.review.request(BOX);
-    test.callbacks().onMessage(standardClassBMessage);
+    test.callbacks().onMessage(message);
     const target = test.review.request(BOX).targets[0];
     expect(target.mmsi).toBe('261000001');
     expect(target.navigationState).toBeUndefined();
@@ -122,7 +125,7 @@ describe('destination AIS review', () => {
     test.review.stop();
   });
 
-  it('rate-limits replacement subscriptions and lets prior targets age out', () => {
+  it('rate-limits replacement subscriptions and bounds retained targets to the requested area', () => {
     vi.useFakeTimers();
     const test = harness();
     test.review.request(BOX);
@@ -131,13 +134,13 @@ describe('destination AIS review', () => {
       { latitude: 43, longitude: -72 },
       { latitude: 42, longitude: -71 },
     ];
-    expect(test.review.request(next)).toMatchObject({ state: 'connecting' });
-    expect(test.review.request(next).targets).toHaveLength(1);
+    expect(test.review.request(next)).toMatchObject({ state: 'connecting', targets: [] });
     expect(test.updateBoundingBox).not.toHaveBeenCalled();
     test.advance(1_100);
     vi.advanceTimersByTime(1_100);
     expect(test.updateBoundingBox).toHaveBeenCalledWith(next);
-    expect(test.review.request(next).targets).toHaveLength(1);
+    expect(test.review.request(next).targets).toEqual([]);
+    expect(test.review.request(BOX).targets).toHaveLength(1);
     test.review.stop();
     vi.useRealTimers();
   });
