@@ -111,6 +111,19 @@ describe('destination AIS review', () => {
     test.review.stop();
   });
 
+  it('preserves a connection failure while the same viewport keeps polling', () => {
+    const test = harness();
+    test.review.request(BOX);
+    test.callbacks().onStatus('Disconnected - reconnecting in 5s');
+    expect(test.review.request(BOX).state).toBe('disconnected');
+    test.callbacks().onError('WebSocket error: Opening handshake has timed out');
+    expect(test.review.request(BOX)).toMatchObject({
+      state: 'error',
+      error: 'WebSocket error: Opening handshake has timed out',
+    });
+    test.review.stop();
+  });
+
   it('accepts Class B positions without inventing a navigation state', () => {
     const test = harness();
     const message = structuredClone(standardClassBMessage);
@@ -159,7 +172,7 @@ describe('destination AIS review', () => {
     test.review.stop();
   });
 
-  it('rate-limits replacement subscriptions and bounds retained targets to the requested area', () => {
+  it('rate-limits replacement connections and bounds retained targets to the requested area', () => {
     vi.useFakeTimers();
     const test = harness();
     test.review.request(BOX);
@@ -172,14 +185,15 @@ describe('destination AIS review', () => {
     expect(test.updateBoundingBox).not.toHaveBeenCalled();
     test.advance(1_100);
     vi.advanceTimersByTime(1_100);
-    expect(test.updateBoundingBox).toHaveBeenCalledWith(next);
+    expect(test.start).toHaveBeenLastCalledWith(next);
+    expect(test.start).toHaveBeenCalledTimes(2);
     expect(test.review.request(next).targets).toEqual([]);
     expect(test.review.request(BOX).targets).toHaveLength(1);
     test.review.stop();
     vi.useRealTimers();
   });
 
-  it('keeps a replacement connecting until its own subscription is confirmed', () => {
+  it('keeps a confirmed replacement and the old connection overlapping for sixty seconds', () => {
     vi.useFakeTimers();
     const test = harness();
     test.review.request(BOX);
@@ -199,6 +213,39 @@ describe('destination AIS review', () => {
     vi.advanceTimersByTime(1_100);
     test.callbacks().onSubscriptionConfirmed?.([next]);
     expect(test.review.request(next).state).toBe('live');
+    expect(test.stop).not.toHaveBeenCalled();
+    test.advance(59_999);
+    vi.advanceTimersByTime(59_999);
+    expect(test.stop).not.toHaveBeenCalled();
+    test.advance(1);
+    vi.advanceTimersByTime(1);
+    expect(test.stop).toHaveBeenCalledOnce();
+    test.review.stop();
+    vi.useRealTimers();
+  });
+
+  it('retargets an in-flight replacement instead of opening a third viewport connection', () => {
+    vi.useFakeTimers();
+    const test = harness();
+    test.review.request(BOX);
+    const next: BoundingBox = [
+      { latitude: 43, longitude: -72 },
+      { latitude: 42, longitude: -71 },
+    ];
+    const latest: BoundingBox = [
+      { latitude: 48, longitude: -123 },
+      { latitude: 47, longitude: -122 },
+    ];
+    test.review.request(next);
+    test.advance(1_100);
+    vi.advanceTimersByTime(1_100);
+    expect(test.start).toHaveBeenCalledTimes(2);
+
+    test.review.request(latest);
+    test.advance(1_100);
+    vi.advanceTimersByTime(1_100);
+    expect(test.start).toHaveBeenCalledTimes(2);
+    expect(test.updateBoundingBox).toHaveBeenCalledWith(latest);
     test.review.stop();
     vi.useRealTimers();
   });

@@ -6,6 +6,7 @@ const HISTORY_SAMPLE_INTERVAL_MS = 30 * 1000;
 const TARGET_STALE_MS = 5 * 60 * 1000;
 const IDLE_MS = 5 * 60 * 1000;
 const UPDATE_MIN_MS = 1100;
+const HANDOFF_OVERLAP_MS = 60 * 1000;
 const MAX_TARGETS = 10_000;
 const MAX_BBOX_SPAN_DEGREES = 10;
 // A client can serialize two valid endpoints whose subtraction lands a few ulps above ten. Keep
@@ -65,6 +66,14 @@ export type DestinationManagerFactory = (
   watchdogTimeoutMs: number,
   callbacks: WebSocketManagerCallbacks,
 ) => Pick<WebSocketManager, 'isConnected' | 'start' | 'stop' | 'updateBoundingBox'>;
+
+type DestinationManager = ReturnType<DestinationManagerFactory>;
+
+interface ManagerSlot {
+  manager: DestinationManager;
+  bbox: BoundingBox | null;
+  confirmed: boolean;
+}
 
 function finiteInRange(value: unknown, min: number, max: number): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
@@ -259,16 +268,21 @@ function bboxCenter(bbox: BoundingBox): { latitude: number; longitude: number } 
 }
 
 export class DestinationAisReview {
-  private readonly manager: ReturnType<DestinationManagerFactory>;
+  private readonly apiKey: string;
+  private readonly callbacks: Pick<WebSocketManagerCallbacks, 'onDebug' | 'onError'>;
+  private readonly managerFactory: DestinationManagerFactory;
   private readonly targets = new Map<string, TrackedTarget>();
   private readonly now: () => number;
   private state: DestinationReviewState = 'idle';
   private error: string | undefined;
-  private bbox: BoundingBox | null = null;
+  private active: ManagerSlot;
+  private replacement: ManagerSlot | null = null;
+  private desiredBbox: BoundingBox | null = null;
   private pendingBbox: BoundingBox | null = null;
   private lastUpdateAt = 0;
   private updateTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private overlapTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     apiKey: string,
@@ -276,47 +290,81 @@ export class DestinationAisReview {
     managerFactory: DestinationManagerFactory = (...args) => new WebSocketManager(...args),
     now: () => number = Date.now,
   ) {
+    this.apiKey = apiKey;
+    this.callbacks = callbacks;
+    this.managerFactory = managerFactory;
     this.now = now;
-    this.manager = managerFactory(
-      apiKey,
+    this.active = this.createManager();
+  }
+
+  private createManager(): ManagerSlot {
+    const slot = {} as ManagerSlot;
+    slot.bbox = null;
+    slot.confirmed = false;
+    slot.manager = this.managerFactory(
+      this.apiKey,
       ['PositionReport', 'StandardClassBPositionReport', 'ExtendedClassBPositionReport'],
       120_000,
       {
         onMessage: (message) => this.observe(message),
         onStatus: (status) => {
           if (status.startsWith('Disconnected') || status.startsWith('Rate limited')) {
-            this.state = 'disconnected';
-          } else if (!status.startsWith('Connected')) {
+            slot.confirmed = false;
+            if (slot === this.replacement) this.clearOverlapTimer();
+            if (this.isRelevant(slot)) this.state = 'disconnected';
+          } else if (!status.startsWith('Connected') && this.isRelevant(slot)) {
             this.state = 'connecting';
           }
-          this.error = undefined;
+          if (this.isRelevant(slot)) this.error = undefined;
         },
         onSubscriptionConfirmed: (boundingBoxes) => {
           const confirmed = boundingBoxes[0];
-          if (confirmed && sameBbox(this.bbox, confirmed) && this.pendingBbox === null) {
+          if (!confirmed || !sameBbox(slot.bbox, confirmed)) return;
+          slot.confirmed = true;
+          if (slot === this.replacement && sameBbox(this.desiredBbox, confirmed)) {
+            this.state = 'live';
+            this.error = undefined;
+            this.beginOverlap(slot);
+          } else if (
+            slot === this.active &&
+            this.replacement === null &&
+            sameBbox(this.desiredBbox, confirmed)
+          ) {
             this.state = 'live';
             this.error = undefined;
           }
         },
-        onDebug: callbacks.onDebug,
+        onDebug: this.callbacks.onDebug,
         onError: (message) => {
-          this.state = 'error';
-          this.error = message.slice(0, 512);
-          callbacks.onError(message);
+          if (this.isRelevant(slot)) {
+            this.state = 'error';
+            this.error = message.slice(0, 512);
+          }
+          this.callbacks.onError(message);
         },
       },
     );
+    return slot;
   }
 
   request(bbox: BoundingBox): DestinationSnapshot {
     this.resetIdleTimer();
-    if (!this.manager.isConnected) {
-      this.bbox = bbox;
+    this.desiredBbox = bbox;
+    if (this.active.bbox === null) {
+      this.active.bbox = bbox;
+      this.active.confirmed = false;
       this.pendingBbox = null;
       this.state = 'connecting';
-      this.manager.start(bbox);
+      this.active.manager.start(bbox);
       this.lastUpdateAt = this.now();
-    } else if (!sameBbox(this.bbox, bbox)) {
+    } else if (sameBbox(this.active.bbox, bbox)) {
+      if (this.replacement) this.cancelReplacement();
+      this.pendingBbox = null;
+      if (this.active.confirmed) {
+        this.state = 'live';
+        this.error = undefined;
+      }
+    } else if (!this.replacement || !sameBbox(this.replacement.bbox, bbox)) {
       this.pendingBbox = bbox;
       this.state = 'connecting';
       this.scheduleUpdate();
@@ -329,10 +377,15 @@ export class DestinationAisReview {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.updateTimer = null;
     this.idleTimer = null;
+    this.clearOverlapTimer();
     this.pendingBbox = null;
-    this.bbox = null;
+    this.desiredBbox = null;
     this.targets.clear();
-    this.manager.stop();
+    this.replacement?.manager.stop();
+    this.replacement = null;
+    this.active.manager.stop();
+    this.active.bbox = null;
+    this.active.confirmed = false;
     this.state = 'idle';
     this.error = undefined;
   }
@@ -350,7 +403,7 @@ export class DestinationAisReview {
     this.targets.delete(report.mmsi);
     this.targets.set(report.mmsi, { ...prior, ...report, samples });
     while (this.targets.size > MAX_TARGETS) {
-      const center = this.bbox ? bboxCenter(this.bbox) : undefined;
+      const center = this.desiredBbox ? bboxCenter(this.desiredBbox) : undefined;
       let discard: string | undefined;
       let greatestDistance = -1;
       for (const [mmsi, target] of this.targets) {
@@ -391,12 +444,67 @@ export class DestinationAisReview {
       this.updateTimer = null;
       const bbox = this.pendingBbox;
       this.pendingBbox = null;
-      if (!bbox || sameBbox(this.bbox, bbox)) return;
-      this.bbox = bbox;
+      if (!bbox || sameBbox(this.active.bbox, bbox)) return;
       this.state = 'connecting';
-      this.manager.updateBoundingBox(bbox);
+      this.startOrRetargetReplacement(bbox);
       this.lastUpdateAt = this.now();
     }, delay);
+  }
+
+  private startOrRetargetReplacement(bbox: BoundingBox): void {
+    this.clearOverlapTimer();
+    if (this.replacement) {
+      this.replacement.bbox = bbox;
+      this.replacement.confirmed = false;
+      this.replacement.manager.updateBoundingBox(bbox);
+      this.callbacks.onDebug('Retargeting pending AIS viewport replacement');
+      return;
+    }
+    const replacement = this.createManager();
+    replacement.bbox = bbox;
+    this.replacement = replacement;
+    this.callbacks.onDebug('Starting replacement AIS viewport connection');
+    replacement.manager.start(bbox);
+  }
+
+  private beginOverlap(slot: ManagerSlot): void {
+    this.clearOverlapTimer();
+    this.callbacks.onDebug('Replacement AIS viewport confirmed; overlapping connections for 60s');
+    this.overlapTimer = setTimeout(() => {
+      this.overlapTimer = null;
+      if (
+        this.replacement !== slot ||
+        !slot.confirmed ||
+        !slot.manager.isConnected ||
+        slot.bbox === null ||
+        !sameBbox(this.desiredBbox, slot.bbox)
+      ) {
+        return;
+      }
+      const previous = this.active;
+      this.active = slot;
+      this.replacement = null;
+      previous.manager.stop();
+      this.state = 'live';
+      this.error = undefined;
+      this.callbacks.onDebug('Replacement AIS viewport promoted; previous connection stopped');
+    }, HANDOFF_OVERLAP_MS);
+  }
+
+  private cancelReplacement(): void {
+    this.clearOverlapTimer();
+    this.replacement?.manager.stop();
+    this.replacement = null;
+  }
+
+  private clearOverlapTimer(): void {
+    if (this.overlapTimer) clearTimeout(this.overlapTimer);
+    this.overlapTimer = null;
+  }
+
+  private isRelevant(slot: ManagerSlot): boolean {
+    if (slot === this.replacement) return true;
+    return slot === this.active && this.replacement === null;
   }
 
   private resetIdleTimer(): void {
