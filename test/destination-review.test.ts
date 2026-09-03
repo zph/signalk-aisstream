@@ -69,7 +69,7 @@ describe('destination AIS review', () => {
     expect(parseDestinationBbox('not-json')).toBeUndefined();
   });
 
-  it('uses a separate connection and returns bounded history summaries', () => {
+  it('uses its manager and returns bounded history summaries', () => {
     const test = harness();
     expect(test.review.request(BOX)).toMatchObject({ state: 'connecting', targets: [] });
     expect(test.start).toHaveBeenCalledWith(BOX);

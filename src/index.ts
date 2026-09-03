@@ -26,9 +26,15 @@ import haversine from 'haversine-distance';
 import * as geolib from 'geolib';
 import { SignalKApp, SignalKPlugin, PluginOptions } from './types/signalk';
 import { AisMessageType } from './types/aisstream';
-import { WebSocketManager, BoundingBox } from './websocket-manager';
-import { buildSignalKDelta } from './ais-processor';
+import { WebSocketManager, BoundingBox, WebSocketManagerCallbacks } from './websocket-manager';
+import { aisMessagePosition, buildSignalKDelta } from './ais-processor';
 import { DestinationAisReview, parseDestinationBbox } from './destination-review';
+
+const DESTINATION_MESSAGE_TYPES: AisMessageType[] = [
+  'PositionReport',
+  'StandardClassBPositionReport',
+  'ExtendedClassBPositionReport',
+];
 
 function toBoundingBox(bounds: { latitude: number; longitude: number }[]): BoundingBox {
   return [
@@ -70,7 +76,33 @@ function findPositionValue(update: unknown): { latitude: number; longitude: numb
   return null;
 }
 
-function createPlugin(app: SignalKApp): SignalKPlugin {
+function boundingBoxContains(
+  bbox: BoundingBox,
+  position: { latitude: number; longitude: number },
+): boolean {
+  const north = Math.max(bbox[0].latitude, bbox[1].latitude);
+  const south = Math.min(bbox[0].latitude, bbox[1].latitude);
+  const east = Math.max(bbox[0].longitude, bbox[1].longitude);
+  const west = Math.min(bbox[0].longitude, bbox[1].longitude);
+  return (
+    position.latitude >= south &&
+    position.latitude <= north &&
+    position.longitude >= west &&
+    position.longitude <= east
+  );
+}
+
+type WebSocketManagerFactory = (
+  apiKey: string,
+  messageTypes: AisMessageType[],
+  watchdogTimeoutMs: number,
+  callbacks: WebSocketManagerCallbacks,
+) => WebSocketManager;
+
+function createPlugin(
+  app: SignalKApp,
+  websocketManagerFactory: WebSocketManagerFactory = (...args) => new WebSocketManager(...args),
+): SignalKPlugin {
   const plugin: SignalKPlugin = {
     id: 'signalk-aisstream',
     name: 'SignalK AisStream',
@@ -88,6 +120,8 @@ function createPlugin(app: SignalKApp): SignalKPlugin {
   let oldLon: number | null = null;
   let oldLat: number | null = null;
   let boundingBox: BoundingBox | null = null;
+  let destinationBoundingBox: BoundingBox | null = null;
+  let destinationCallbacks: WebSocketManagerCallbacks | null = null;
   let wsManager: WebSocketManager | null = null;
   let destinationReview: DestinationAisReview | null = null;
 
@@ -111,12 +145,38 @@ function createPlugin(app: SignalKApp): SignalKPlugin {
     if (options.aidsToNavigationReport) messageTypes.push('AidsToNavigationReport');
     if (options.baseStationReport) messageTypes.push('BaseStationReport');
 
-    wsManager = new WebSocketManager(
+    const streamMessageTypes = [...new Set([...messageTypes, ...DESTINATION_MESSAGE_TYPES])];
+
+    function syncStreamBoundingBoxes(): void {
+      if (!wsManager) return;
+      const boxes = [boundingBox, destinationBoundingBox].filter(
+        (box): box is BoundingBox => box !== null,
+      );
+      if (boxes.length === 0) {
+        wsManager.stop();
+      } else if (wsManager.isConnected || wsManager.isReconnecting) {
+        wsManager.updateBoundingBoxes(boxes);
+      } else {
+        wsManager.startBoundingBoxes(boxes);
+      }
+    }
+
+    wsManager = websocketManagerFactory(
       options.apiKey,
-      messageTypes,
+      streamMessageTypes,
       options.refreshRate * 1000 + 60000,
       {
         onMessage: (aisMessage) => {
+          const position = aisMessagePosition(aisMessage);
+          if (
+            position &&
+            destinationBoundingBox &&
+            boundingBoxContains(destinationBoundingBox, position)
+          ) {
+            destinationCallbacks?.onMessage(aisMessage);
+          }
+          if (!position || !boundingBox || !boundingBoxContains(boundingBox, position)) return;
+
           app.debug('------------------------------------------------------------');
           app.debug(JSON.stringify(aisMessage, null, 2));
 
@@ -128,15 +188,44 @@ function createPlugin(app: SignalKApp): SignalKPlugin {
             app.error('Missing required data: MMSI, longitude, or latitude.');
           }
         },
-        onStatus: setStatus,
+        onStatus: (status) => {
+          setStatus(status);
+          destinationCallbacks?.onStatus(status);
+        },
         onDebug: (msg) => app.debug(msg),
-        onError: (msg) => app.error(msg),
+        onError: (msg) => {
+          app.error(msg);
+          destinationCallbacks?.onError(msg);
+        },
       },
     );
-    destinationReview = new DestinationAisReview(options.apiKey, {
-      onDebug: (msg) => app.debug(`[destination] ${msg}`),
-      onError: (msg) => app.error(`[destination] ${msg}`),
-    });
+    destinationReview = new DestinationAisReview(
+      options.apiKey,
+      {
+        onDebug: (msg) => app.debug(`[destination] ${msg}`),
+        onError: (msg) => app.error(`[destination] ${msg}`),
+      },
+      (_apiKey, _messageTypes, _watchdogTimeoutMs, callbacks) => {
+        destinationCallbacks = callbacks;
+        return {
+          get isConnected() {
+            return wsManager?.isConnected ?? false;
+          },
+          start(nextBoundingBox) {
+            destinationBoundingBox = nextBoundingBox;
+            syncStreamBoundingBoxes();
+          },
+          stop() {
+            destinationBoundingBox = null;
+            syncStreamBoundingBoxes();
+          },
+          updateBoundingBox(nextBoundingBox) {
+            destinationBoundingBox = nextBoundingBox;
+            syncStreamBoundingBoxes();
+          },
+        };
+      },
+    );
 
     // Attempt immediate start using current position if available
     if (app.getSelfPath && messageTypes.length > 0) {
@@ -151,7 +240,7 @@ function createPlugin(app: SignalKApp): SignalKPlugin {
             options.boundingBoxSize * 1000,
           ),
         );
-        wsManager.start(boundingBox);
+        syncStreamBoundingBoxes();
       }
     }
 
@@ -197,7 +286,7 @@ function createPlugin(app: SignalKApp): SignalKPlugin {
               boundingBox = toBoundingBox(
                 geolib.getBoundsOfDistance({ lat, lon }, options.boundingBoxSize * 1000),
               );
-              wsManager.start(boundingBox);
+              syncStreamBoundingBoxes();
               // Switch to normal refresh rate now that we're connected
               if (period !== options.refreshRate * 1000) {
                 app.debug(`Switching position subscription to ${options.refreshRate}s interval`);
@@ -217,12 +306,12 @@ function createPlugin(app: SignalKApp): SignalKPlugin {
               boundingBox = toBoundingBox(
                 geolib.getBoundsOfDistance({ lat, lon }, options.boundingBoxSize * 1000),
               );
-              wsManager.updateBoundingBox(boundingBox);
+              syncStreamBoundingBoxes();
             } else if (wsManager && !wsManager.isConnected && !wsManager.isReconnecting && messageTypes.length > 0) {
               boundingBox = toBoundingBox(
                 geolib.getBoundsOfDistance({ lat, lon }, options.boundingBoxSize * 1000),
               );
-              wsManager.start(boundingBox);
+              syncStreamBoundingBoxes();
               // Switch to normal refresh rate once reconnected
               if (period !== options.refreshRate * 1000) {
                 app.debug(`Switching position subscription to ${options.refreshRate}s interval`);
@@ -251,6 +340,8 @@ function createPlugin(app: SignalKApp): SignalKPlugin {
     }
     destinationReview?.stop();
     destinationReview = null;
+    destinationCallbacks = null;
+    destinationBoundingBox = null;
 
     oldLon = null;
     oldLat = null;

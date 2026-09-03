@@ -4,7 +4,7 @@
  * exponential backoff, and watchdog timeout.
  */
 
-import WebSocket from 'ws';
+import WebSocket, { ClientOptions } from 'ws';
 import { AisStreamMessage, AisMessageType, SubscriptionMessage } from './types/aisstream';
 
 const AISSTREAM_URL = 'wss://stream.aisstream.io/v0/stream';
@@ -12,6 +12,42 @@ const HANDSHAKE_TIMEOUT = 30000;
 const CONNECT_TIMEOUT_FALLBACK = 32000;
 const INITIAL_RECONNECT_DELAY = 5000;
 const MAX_RECONNECT_DELAY = 300000;
+const INITIAL_RATE_LIMIT_DELAY = 60000;
+const MAX_RATE_LIMIT_DELAY = 900000;
+const MAX_JITTER_DELAY = 60000;
+const SUBSCRIPTION_MIN_INTERVAL = 1100;
+
+export function parseRetryAfterMs(
+  value: string | string[] | undefined,
+  now: number = Date.now(),
+): number | undefined {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  if (!candidate) return undefined;
+  const seconds = Number(candidate);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const at = Date.parse(candidate);
+  return Number.isFinite(at) ? Math.max(0, at - now) : undefined;
+}
+
+export function addReconnectJitter(delay: number, random: () => number = Math.random): number {
+  const jitter = Math.min(delay * 0.25, MAX_JITTER_DELAY) * Math.max(0, Math.min(1, random()));
+  return Math.round(delay + jitter);
+}
+
+export function createSubscriptionMessage(
+  apiKey: string,
+  boundingBoxes: BoundingBox[],
+  messageTypes: AisMessageType[],
+): SubscriptionMessage {
+  return {
+    APIKey: apiKey,
+    BoundingBoxes: boundingBoxes.map((boundingBox) => [
+      [boundingBox[0].latitude, boundingBox[0].longitude],
+      [boundingBox[1].latitude, boundingBox[1].longitude],
+    ]),
+    FilterMessageTypes: messageTypes,
+  };
+}
 
 export interface BoundingBoxCorner {
   latitude: number;
@@ -27,16 +63,24 @@ export interface WebSocketManagerCallbacks {
   onError: (message: string) => void;
 }
 
+export type WebSocketFactory = (url: string, options: ClientOptions) => WebSocket;
+
 export class WebSocketManager {
   private socket: WebSocket | null = null;
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private subscriptionTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay: number = INITIAL_RECONNECT_DELAY;
+  private rateLimitDelay: number = INITIAL_RATE_LIMIT_DELAY;
+  private nextReconnectDelay: number | null = null;
+  private suppressNextError = false;
+  private lastSubscriptionAt = 0;
   private readonly apiKey: string;
   private readonly messageTypes: AisMessageType[];
   private readonly watchdogTimeout: number;
   private readonly callbacks: WebSocketManagerCallbacks;
-  private boundingBox: BoundingBox | null = null;
+  private readonly createSocket: WebSocketFactory;
+  private boundingBoxes: BoundingBox[] = [];
   private stopped = false;
 
   constructor(
@@ -44,11 +88,13 @@ export class WebSocketManager {
     messageTypes: AisMessageType[],
     watchdogTimeoutMs: number,
     callbacks: WebSocketManagerCallbacks,
+    createSocket: WebSocketFactory = (url, options) => new WebSocket(url, options),
   ) {
     this.apiKey = apiKey;
     this.messageTypes = messageTypes;
     this.watchdogTimeout = watchdogTimeoutMs;
     this.callbacks = callbacks;
+    this.createSocket = createSocket;
   }
 
   get isConnected(): boolean {
@@ -60,16 +106,24 @@ export class WebSocketManager {
   }
 
   start(boundingBox: BoundingBox): void {
+    this.startBoundingBoxes([boundingBox]);
+  }
+
+  startBoundingBoxes(boundingBoxes: BoundingBox[]): void {
     this.stopped = false;
-    this.boundingBox = boundingBox;
+    this.boundingBoxes = boundingBoxes;
     if (this.socket || this.reconnectTimer) return;
     this.connect();
   }
 
   updateBoundingBox(boundingBox: BoundingBox): void {
-    this.boundingBox = boundingBox;
+    this.updateBoundingBoxes([boundingBox]);
+  }
+
+  updateBoundingBoxes(boundingBoxes: BoundingBox[]): void {
+    this.boundingBoxes = boundingBoxes;
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.sendSubscription();
+      this.scheduleSubscription();
     }
   }
 
@@ -77,7 +131,12 @@ export class WebSocketManager {
     this.stopped = true;
     this.clearWatchdog();
     this.clearReconnectTimer();
+    this.clearSubscriptionTimer();
     this.reconnectDelay = INITIAL_RECONNECT_DELAY;
+    this.rateLimitDelay = INITIAL_RATE_LIMIT_DELAY;
+    this.nextReconnectDelay = null;
+    this.suppressNextError = false;
+    this.lastSubscriptionAt = 0;
     if (this.socket) {
       this.socket.close();
     }
@@ -85,11 +144,16 @@ export class WebSocketManager {
   }
 
   private connect(): void {
-    if (this.stopped || this.socket || !this.boundingBox || this.messageTypes.length === 0) {
+    if (
+      this.stopped ||
+      this.socket ||
+      this.boundingBoxes.length === 0 ||
+      this.messageTypes.length === 0
+    ) {
       return;
     }
 
-    this.socket = new WebSocket(AISSTREAM_URL, {
+    this.socket = this.createSocket(AISSTREAM_URL, {
       handshakeTimeout: HANDSHAKE_TIMEOUT,
     });
 
@@ -102,6 +166,22 @@ export class WebSocketManager {
       }
     }, CONNECT_TIMEOUT_FALLBACK);
 
+    this.socket.on('unexpected-response', (_request, response) => {
+      clearTimeout(connectTimeout);
+      const statusCode = response.statusCode ?? 0;
+      if (statusCode === 429) {
+        const retryAfter = parseRetryAfterMs(response.headers['retry-after']);
+        const baseDelay = Math.max(this.rateLimitDelay, retryAfter ?? 0);
+        this.nextReconnectDelay = addReconnectJitter(baseDelay);
+        this.rateLimitDelay = Math.min(this.rateLimitDelay * 2, MAX_RATE_LIMIT_DELAY);
+      } else {
+        this.callbacks.onError(`WebSocket upgrade rejected with HTTP ${statusCode}`);
+      }
+      this.suppressNextError = true;
+      response.resume();
+      this.socket?.terminate();
+    });
+
     this.socket.addEventListener('open', () => {
       clearTimeout(connectTimeout);
       this.callbacks.onStatus('Connected - waiting for AIS data');
@@ -110,6 +190,10 @@ export class WebSocketManager {
     });
 
     this.socket.addEventListener('error', (event) => {
+      if (this.suppressNextError) {
+        this.suppressNextError = false;
+        return;
+      }
       this.callbacks.onError('WebSocket error: ' + event.message);
     });
 
@@ -119,6 +203,7 @@ export class WebSocketManager {
         `WebSocket closed: code=${event.code} wasClean=${event.wasClean} reason=${event.reason || 'none'}`,
       );
       this.socket = null;
+      this.clearSubscriptionTimer();
       if (!event.wasClean && !this.stopped) {
         this.scheduleReconnect();
       }
@@ -130,6 +215,7 @@ export class WebSocketManager {
         this.callbacks.onMessage(aisMessage);
         this.resetWatchdog();
         this.reconnectDelay = INITIAL_RECONNECT_DELAY;
+        this.rateLimitDelay = INITIAL_RATE_LIMIT_DELAY;
         this.callbacks.onStatus('Connected');
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -139,38 +225,61 @@ export class WebSocketManager {
   }
 
   private sendSubscription(): void {
-    if (!this.socket || !this.boundingBox) return;
+    if (!this.socket || this.boundingBoxes.length === 0) return;
 
-    const subscription: SubscriptionMessage = {
-      APIKey: this.apiKey,
-      BoundingBoxes: [[
-        [this.boundingBox[0].latitude, this.boundingBox[0].longitude],
-        [this.boundingBox[1].latitude, this.boundingBox[1].longitude],
-      ]],
-      FilterMessageTypes: this.messageTypes,
-    };
+    const subscription = createSubscriptionMessage(
+      this.apiKey,
+      this.boundingBoxes,
+      this.messageTypes,
+    );
 
     this.callbacks.onDebug('Subscription Message: ' + JSON.stringify(subscription));
     this.socket.send(JSON.stringify(subscription));
+    this.lastSubscriptionAt = Date.now();
+  }
+
+  private scheduleSubscription(): void {
+    if (this.subscriptionTimer) return;
+    const delay = Math.max(0, SUBSCRIPTION_MIN_INTERVAL - (Date.now() - this.lastSubscriptionAt));
+    this.subscriptionTimer = setTimeout(() => {
+      this.subscriptionTimer = null;
+      if (this.socket?.readyState === WebSocket.OPEN) this.sendSubscription();
+    }, delay);
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer || this.stopped || !this.boundingBox || this.messageTypes.length === 0) {
+    if (
+      this.reconnectTimer ||
+      this.stopped ||
+      this.boundingBoxes.length === 0 ||
+      this.messageTypes.length === 0
+    ) {
       return;
     }
 
-    const delaySec = this.reconnectDelay / 1000;
-    this.callbacks.onDebug(`WebSocket reconnecting in ${delaySec}s...`);
-    this.callbacks.onStatus(`Disconnected - reconnecting in ${delaySec}s`);
+    const rateLimited = this.nextReconnectDelay !== null;
+    const delay = this.nextReconnectDelay ?? this.reconnectDelay;
+    this.nextReconnectDelay = null;
+    const delaySec = Math.ceil(delay / 1000);
+    const reason = rateLimited ? 'Rate limited' : 'Disconnected';
+    this.callbacks.onDebug(`${reason}; reconnecting in ${delaySec}s...`);
+    this.callbacks.onStatus(`${reason} - reconnecting in ${delaySec}s`);
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (!this.socket && this.boundingBox && this.messageTypes.length > 0 && !this.stopped) {
+      if (
+        !this.socket &&
+        this.boundingBoxes.length > 0 &&
+        this.messageTypes.length > 0 &&
+        !this.stopped
+      ) {
         this.connect();
       }
-    }, this.reconnectDelay);
+    }, delay);
 
-    this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY);
+    if (!rateLimited) {
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY);
+    }
   }
 
   private resetWatchdog(): void {
@@ -202,6 +311,13 @@ export class WebSocketManager {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+  }
+
+  private clearSubscriptionTimer(): void {
+    if (this.subscriptionTimer) {
+      clearTimeout(this.subscriptionTimer);
+      this.subscriptionTimer = null;
     }
   }
 }

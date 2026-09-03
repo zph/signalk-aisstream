@@ -5,6 +5,16 @@ import type {
   SignalKPositionDelta,
 } from '../src/types/signalk';
 import createPlugin from '../src/index';
+import type { AisMessageType } from '../src/types/aisstream';
+import type { WebSocketManager, WebSocketManagerCallbacks } from '../src/websocket-manager';
+import { positionReportMessage } from './fixtures/messages';
+
+type WebSocketManagerFactory = (
+  apiKey: string,
+  messageTypes: AisMessageType[],
+  watchdogTimeoutMs: number,
+  callbacks: WebSocketManagerCallbacks,
+) => WebSocketManager;
 
 function baseOptions(overrides: Partial<PluginOptions> = {}): PluginOptions {
   return {
@@ -84,5 +94,86 @@ describe('plugin position subscription', () => {
       ],
     })).not.toThrow();
     expect(debug).toHaveBeenCalledWith('No need to update AIS stream');
+  });
+});
+
+describe('destination subscription routing', () => {
+  it('uses one upstream socket for both boxes without publishing remote targets as local traffic', () => {
+    vi.useFakeTimers();
+    const { app } = createApp();
+    app.getSelfPath = () => ({ longitude: -122.4, latitude: 37.8 });
+    const startBoundingBoxes = vi.fn();
+    const updateBoundingBoxes = vi.fn();
+    let callbacks: Parameters<WebSocketManagerFactory>[3] | undefined;
+    const managerFactory = vi.fn<WebSocketManagerFactory>(
+      (_apiKey, _messageTypes, _watchdogTimeoutMs, nextCallbacks) => {
+        callbacks = nextCallbacks;
+        return {
+          isConnected: true,
+          isReconnecting: false,
+          startBoundingBoxes,
+          updateBoundingBoxes,
+          stop: vi.fn(),
+        } as never;
+      },
+    );
+    const plugin = createPlugin(app, managerFactory);
+    let routeHandler:
+      | ((request: { query?: Record<string, unknown> }, response: {
+          json: ReturnType<typeof vi.fn>;
+          set: ReturnType<typeof vi.fn>;
+          status: ReturnType<typeof vi.fn>;
+        }) => void)
+      | undefined;
+    plugin.registerWithRouter?.({
+      access: () => ({
+        get: (_path, handler) => {
+          routeHandler = handler as typeof routeHandler;
+        },
+      }),
+    });
+    plugin.start(baseOptions());
+
+    const response = {
+      json: vi.fn(),
+      set: vi.fn().mockReturnThis(),
+      status: vi.fn().mockReturnThis(),
+    };
+    routeHandler?.({ query: { bbox: '[-71.4,41.4,-71.2,41.6]' } }, response);
+    vi.advanceTimersByTime(0);
+
+    expect(managerFactory).toHaveBeenCalledTimes(1);
+    expect(updateBoundingBoxes).toHaveBeenCalledWith([
+      expect.any(Array),
+      [
+        { latitude: 41.6, longitude: -71.4 },
+        { latitude: 41.4, longitude: -71.2 },
+      ],
+    ]);
+
+    const remote = structuredClone(positionReportMessage);
+    remote.MetaData.Latitude = 41.5;
+    remote.MetaData.Longitude = -71.3;
+    delete remote.MetaData.latitude;
+    delete remote.MetaData.longitude;
+    callbacks?.onMessage(remote);
+    expect(app.handleMessage).not.toHaveBeenCalled();
+
+    routeHandler?.({ query: { bbox: '[-71.4,41.4,-71.2,41.6]' } }, response);
+    expect(response.json).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        targets: [expect.objectContaining({ mmsi: '211234560' })],
+      }),
+    );
+
+    const local = structuredClone(positionReportMessage);
+    local.MetaData.Latitude = 37.8;
+    local.MetaData.Longitude = -122.4;
+    delete local.MetaData.latitude;
+    delete local.MetaData.longitude;
+    callbacks?.onMessage(local);
+    expect(app.handleMessage).toHaveBeenCalledTimes(1);
+    plugin.stop();
+    vi.useRealTimers();
   });
 });

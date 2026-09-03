@@ -23,8 +23,8 @@ SignalK plugin to track the worlds vessels via websocket.
 
 ## Destination review API
 
-Chartplotters can request a second, temporary AISStream area without moving the primary subscription
-away from the vessel:
+Chartplotters can request a temporary AISStream area without moving the primary subscription away
+from the vessel:
 
 ```text
 GET /plugins/signalk-aisstream/api/destination?bbox=[west,south,east,north]
@@ -32,9 +32,12 @@ GET /plugins/signalk-aisstream/api/destination?bbox=[west,south,east,north]
 
 The bounding box must span no more than five degrees in either direction. The response contains up
 to 1,000 recent vessel positions plus bounded 30-minute movement summaries for dwell and swing
-analysis. Requests update one shared destination subscription, are rate-limited to the AISStream
-replacement limit, and stop after five minutes without a request. The API key remains inside the
-plugin and is never returned to the client.
+analysis. The boat and destination bounding boxes share one upstream WebSocket, while the plugin
+keeps destination targets out of the primary Signal K vessel stream. Requests update one shared
+destination subscription, are rate-limited to the AISStream replacement limit, and stop after five
+minutes without a request. The API key remains inside the plugin and is never returned to the
+client. An upstream HTTP 429 response uses `Retry-After` when provided, otherwise reconnecting backs
+off from one minute to fifteen minutes with jitter.
 
 ## Data source coverage
 https://aisstream.io/coverage

@@ -15,12 +15,13 @@ function isValidTrueHeading(heading: number): boolean {
   return heading >= 0 && heading < 360;
 }
 
-export function buildSignalKDelta(
-  data: AisStreamMessage,
-  pluginId: string,
-): SignalKDelta | null {
+export interface AisMessagePosition {
+  latitude: number;
+  longitude: number;
+}
+
+export function aisMessagePosition(data: AisStreamMessage): AisMessagePosition | undefined {
   const msg = data.Message;
-  const mmsi = data.MetaData?.MMSI;
   const longitude =
     data.MetaData?.longitude ??
     data.MetaData?.Longitude ??
@@ -33,14 +34,36 @@ export function buildSignalKDelta(
     msg.PositionReport?.Latitude ??
     msg.StandardClassBPositionReport?.Latitude ??
     msg.ExtendedClassBPositionReport?.Latitude;
+  if (
+    typeof longitude !== 'number' ||
+    !Number.isFinite(longitude) ||
+    longitude < -180 ||
+    longitude > 180 ||
+    typeof latitude !== 'number' ||
+    !Number.isFinite(latitude) ||
+    latitude < -90 ||
+    latitude > 90
+  ) {
+    return undefined;
+  }
+  return { latitude, longitude };
+}
+
+export function buildSignalKDelta(
+  data: AisStreamMessage,
+  pluginId: string,
+): SignalKDelta | null {
+  const msg = data.Message;
+  const mmsi = data.MetaData?.MMSI;
+  const position = aisMessagePosition(data);
 
   if (
     mmsi === undefined || mmsi === null || mmsi === 0 ||
-    longitude === undefined || longitude === null ||
-    latitude === undefined || latitude === null
+    position === undefined
   ) {
     return null;
   }
+  const { latitude, longitude } = position;
 
   const cog =
     msg.PositionReport?.Cog ??
