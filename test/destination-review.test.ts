@@ -68,6 +68,11 @@ function harness() {
 describe('destination AIS review', () => {
   it('validates and converts a bounded GeoJSON bbox', () => {
     expect(parseDestinationBbox('[11,57,12,58]')).toEqual(BOX);
+    expect(parseDestinationBbox('[0,0,10,10]')).toEqual([
+      { latitude: 10, longitude: 0 },
+      { latitude: 0, longitude: 10 },
+    ]);
+    expect(parseDestinationBbox('[0,0,10.1,10]')).toBeUndefined();
     expect(parseDestinationBbox('[-180,-90,180,90]')).toBeUndefined();
     expect(parseDestinationBbox('[0,0,0,1]')).toBeUndefined();
     expect(parseDestinationBbox('not-json')).toBeUndefined();
@@ -175,6 +180,38 @@ describe('destination AIS review', () => {
     test.callbacks().onMessage(positionReportMessage);
     test.advance(5 * 60 * 1000 + 1);
     expect(test.review.request(BOX).targets).toEqual([]);
+    test.review.stop();
+  });
+
+  it('retains at most one history sample every thirty seconds', () => {
+    const test = harness();
+    test.review.request(BOX);
+    for (let index = 0; index <= 30; index += 1) {
+      test.callbacks().onMessage(positionReportMessage);
+      test.advance(1_000);
+    }
+    expect(test.review.request(BOX).targets[0].history.sampleCount).toBe(2);
+    test.review.stop();
+  });
+
+  it('keeps ten thousand targets nearest the active box center', () => {
+    const test = harness();
+    test.review.request(BOX);
+    const message = structuredClone(positionReportMessage);
+    message.MetaData.MMSI = 200000000;
+    message.MetaData.latitude = 57.99;
+    message.MetaData.longitude = 11.99;
+    test.callbacks().onMessage(message);
+    for (let index = 0; index < 10_000; index += 1) {
+      const nearby = structuredClone(positionReportMessage);
+      nearby.MetaData.MMSI = 300000000 + index;
+      nearby.MetaData.latitude = 57.5 + (index % 10) * 0.00001;
+      nearby.MetaData.longitude = 11.5 + (index % 10) * 0.00001;
+      test.callbacks().onMessage(nearby);
+    }
+    const targets = test.review.request(BOX).targets;
+    expect(targets).toHaveLength(10_000);
+    expect(targets.some((target) => target.mmsi === '200000000')).toBe(false);
     test.review.stop();
   });
 

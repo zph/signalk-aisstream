@@ -30,14 +30,15 @@ from the vessel:
 GET /plugins/signalk-aisstream/api/destination?bbox=[west,south,east,north]
 ```
 
-The bounding box must span no more than five degrees in either direction. The response contains up
-to 1,000 recent vessel positions plus bounded 30-minute movement summaries for dwell and swing
-analysis. The destination area uses a dedicated second upstream WebSocket, while the plugin keeps
-destination targets out of the primary Signal K vessel stream. Requests update that viewport
-subscription, are rate-limited to the AISStream replacement limit, and stop after five
-minutes without a request. The API key remains inside the plugin and is never returned to the
-client. An upstream HTTP 429 response uses `Retry-After` when provided, otherwise reconnecting backs
-off from one minute to fifteen minutes with jitter.
+The bounding box must span no more than ten degrees in either direction. The response contains up
+to 10,000 recent vessel positions plus bounded 30-minute movement summaries, sampled at most once
+every 30 seconds per vessel, for dwell and swing analysis. If the limit is reached, vessels farthest
+from the requested area center are discarded first. The destination area uses a dedicated second
+upstream WebSocket, while the plugin keeps destination targets out of the primary Signal K vessel
+stream. Requests update that viewport subscription, are rate-limited to the AISStream replacement
+limit, and stop after five minutes without a request. The API key remains inside the plugin and is
+never returned to the client. An upstream HTTP 429 response uses `Retry-After` when provided,
+otherwise reconnecting backs off from one minute to fifteen minutes with jitter.
 
 ## Data source coverage
 https://aisstream.io/coverage

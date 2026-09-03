@@ -2,10 +2,11 @@ import { AisStreamMessage, AisMessageType } from './types/aisstream';
 import { BoundingBox, WebSocketManager, WebSocketManagerCallbacks } from './websocket-manager';
 
 const HISTORY_MS = 30 * 60 * 1000;
+const HISTORY_SAMPLE_INTERVAL_MS = 30 * 1000;
 const TARGET_STALE_MS = 5 * 60 * 1000;
 const IDLE_MS = 5 * 60 * 1000;
 const UPDATE_MIN_MS = 1100;
-const MAX_TARGETS = 1000;
+const MAX_TARGETS = 10_000;
 const KNOTS_TO_MPS = 0.514444;
 
 export type DestinationReviewState =
@@ -209,8 +210,8 @@ export function parseDestinationBbox(value: unknown): BoundingBox | undefined {
     !finiteInRange(north, -90, 90) ||
     west >= east ||
     south >= north ||
-    east - west > 5 ||
-    north - south > 5
+    east - west > 10 ||
+    north - south > 10
   ) {
     return undefined;
   }
@@ -244,6 +245,13 @@ function bboxContains(
     position.longitude >= west &&
     position.longitude <= east
   );
+}
+
+function bboxCenter(bbox: BoundingBox): { latitude: number; longitude: number } {
+  return {
+    latitude: (bbox[0].latitude + bbox[1].latitude) / 2,
+    longitude: (bbox[0].longitude + bbox[1].longitude) / 2,
+  };
 }
 
 export class DestinationAisReview {
@@ -324,14 +332,25 @@ export class DestinationAisReview {
     if (!report) return;
     const prior = this.targets.get(report.mmsi);
     const samples = prior?.samples ?? [];
-    samples.push({ at: now, position: report.position, sogMps: report.sogMps });
+    const sample = { at: now, position: report.position, sogMps: report.sogMps };
+    const latest = samples.at(-1);
+    if (!latest || now - latest.at >= HISTORY_SAMPLE_INTERVAL_MS) samples.push(sample);
     while (samples[0] && now - samples[0].at > HISTORY_MS) samples.shift();
     this.targets.delete(report.mmsi);
     this.targets.set(report.mmsi, { ...prior, ...report, samples });
     while (this.targets.size > MAX_TARGETS) {
-      const oldest = this.targets.keys().next().value;
-      if (oldest === undefined) break;
-      this.targets.delete(oldest);
+      const center = this.bbox ? bboxCenter(this.bbox) : undefined;
+      let discard: string | undefined;
+      let greatestDistance = -1;
+      for (const [mmsi, target] of this.targets) {
+        const distance = center ? metersBetween(center, target.position) : now - target.lastReportAtMs;
+        if (distance > greatestDistance) {
+          greatestDistance = distance;
+          discard = mmsi;
+        }
+      }
+      if (discard === undefined) break;
+      this.targets.delete(discard);
     }
   }
 
