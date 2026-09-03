@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Ten-degree destination boxes are no longer rejected when endpoint subtraction introduces a
+  negligible floating-point rounding excess.
 - Destination-area replacements now become live only after AISStream confirms the matching
   subscription, so messages still arriving from the prior area cannot prematurely expose an empty
   snapshot.

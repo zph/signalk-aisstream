@@ -7,6 +7,10 @@ const TARGET_STALE_MS = 5 * 60 * 1000;
 const IDLE_MS = 5 * 60 * 1000;
 const UPDATE_MIN_MS = 1100;
 const MAX_TARGETS = 10_000;
+const MAX_BBOX_SPAN_DEGREES = 10;
+// A client can serialize two valid endpoints whose subtraction lands a few ulps above ten. Keep
+// the public limit exact in practical terms without rejecting that ordinary floating-point noise.
+const BBOX_SPAN_EPSILON = 1e-9;
 const KNOTS_TO_MPS = 0.514444;
 
 export type DestinationReviewState =
@@ -210,8 +214,8 @@ export function parseDestinationBbox(value: unknown): BoundingBox | undefined {
     !finiteInRange(north, -90, 90) ||
     west >= east ||
     south >= north ||
-    east - west > 10 ||
-    north - south > 10
+    east - west > MAX_BBOX_SPAN_DEGREES + BBOX_SPAN_EPSILON ||
+    north - south > MAX_BBOX_SPAN_DEGREES + BBOX_SPAN_EPSILON
   ) {
     return undefined;
   }

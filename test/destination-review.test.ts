@@ -72,6 +72,10 @@ describe('destination AIS review', () => {
       { latitude: 10, longitude: 0 },
       { latitude: 0, longitude: 10 },
     ]);
+    expect(parseDestinationBbox('[-128.441133,43.8387,-118.441133,53.8387]')).toEqual([
+      { latitude: 53.8387, longitude: -128.441133 },
+      { latitude: 43.8387, longitude: -118.441133 },
+    ]);
     expect(parseDestinationBbox('[0,0,10.1,10]')).toBeUndefined();
     expect(parseDestinationBbox('[-180,-90,180,90]')).toBeUndefined();
     expect(parseDestinationBbox('[0,0,0,1]')).toBeUndefined();
