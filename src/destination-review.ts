@@ -28,7 +28,11 @@ export interface DestinationTarget {
   mmsi: string;
   name?: string;
   position: { latitude: number; longitude: number };
+  cogRad?: number;
+  headingRad?: number;
   sogMps?: number;
+  shipTypeId?: number;
+  lengthMeters?: number;
   navigationState?: 'anchored' | 'moored';
   lastReportAtMs: number;
   history: DestinationTargetHistory;
@@ -73,17 +77,35 @@ function navigationState(code: unknown): 'anchored' | 'moored' | undefined {
   return undefined;
 }
 
-function positionReport(message: AisStreamMessage): {
-  Sog?: number;
-  NavigationalStatus?: number;
-  Latitude?: number;
-  Longitude?: number;
-} | undefined {
+function positionReport(message: AisStreamMessage):
+  | {
+      Sog?: number;
+      Cog?: number;
+      TrueHeading?: number;
+      Type?: number;
+      Dimension?: { A?: number; B?: number };
+      NavigationalStatus?: number;
+      Latitude?: number;
+      Longitude?: number;
+    }
+  | undefined {
   return (
     message.Message.PositionReport ??
     message.Message.StandardClassBPositionReport ??
     message.Message.ExtendedClassBPositionReport
   );
+}
+
+function radians(value: unknown, maximum: number): number | undefined {
+  return finiteInRange(value, 0, maximum) ? value * (Math.PI / 180) : undefined;
+}
+
+function vesselLength(dimension: { A?: number; B?: number } | undefined): number | undefined {
+  const bow = dimension?.A;
+  const stern = dimension?.B;
+  if (!finiteInRange(bow, 0, 1_000) || !finiteInRange(stern, 0, 1_000)) return undefined;
+  const length = bow + stern;
+  return length > 0 && length <= 1_000 ? length : undefined;
 }
 
 function parseTarget(message: AisStreamMessage, now: number): Omit<TrackedTarget, 'samples'> | undefined {
@@ -104,7 +126,11 @@ function parseTarget(message: AisStreamMessage, now: number): Omit<TrackedTarget
     mmsi,
     name: cleanName(message.MetaData.ShipName),
     position: { latitude, longitude },
+    cogRad: radians(report.Cog, 359.9),
+    headingRad: radians(report.TrueHeading, 359),
     sogMps: finiteInRange(report.Sog, 0, 200) ? report.Sog * KNOTS_TO_MPS : undefined,
+    shipTypeId: finiteInRange(report.Type, 0, 99) ? report.Type : undefined,
+    lengthMeters: vesselLength(report.Dimension),
     navigationState: navigationState(report.NavigationalStatus),
     lastReportAtMs: now,
   };
@@ -142,7 +168,11 @@ function summarize(target: TrackedTarget): DestinationTarget {
     mmsi: target.mmsi,
     name: target.name,
     position: target.position,
+    cogRad: target.cogRad,
+    headingRad: target.headingRad,
     sogMps: target.sogMps,
+    shipTypeId: target.shipTypeId,
+    lengthMeters: target.lengthMeters,
     navigationState: target.navigationState,
     lastReportAtMs: target.lastReportAtMs,
     history: {

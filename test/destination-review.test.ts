@@ -6,7 +6,11 @@ import {
 } from '../src/destination-review';
 import { AisStreamMessage } from '../src/types/aisstream';
 import { BoundingBox, WebSocketManagerCallbacks } from '../src/websocket-manager';
-import { positionReportMessage, standardClassBMessage } from './fixtures/messages';
+import {
+  extendedClassBMessage,
+  positionReportMessage,
+  standardClassBMessage,
+} from './fixtures/messages';
 
 const BOX: BoundingBox = [
   { latitude: 58, longitude: 11 },
@@ -89,6 +93,8 @@ describe('destination AIS review', () => {
     expect(snapshot.targets[0]).toMatchObject({
       mmsi: '211234560',
       name: 'TEST VESSEL',
+      cogRad: Math.PI / 4,
+      headingRad: (47 * Math.PI) / 180,
       history: { sampleCount: 2, firstSeenAtMs: 1_000_000 },
     });
     expect(snapshot.targets[0].history.maxRadiusMeters).toBeGreaterThan(0);
@@ -106,6 +112,24 @@ describe('destination AIS review', () => {
     expect(target.mmsi).toBe('261000001');
     expect(target.navigationState).toBeUndefined();
     expect(target.sogMps).toBeCloseTo(3.19, 2);
+    test.review.stop();
+  });
+
+  it('includes ship type and dimensions from extended Class B positions', () => {
+    const test = harness();
+    const message = structuredClone(extendedClassBMessage);
+    message.MetaData.latitude = 57.5;
+    message.MetaData.longitude = 11.5;
+    test.review.request(BOX);
+    test.callbacks().onMessage(message);
+
+    const target = test.review.request(BOX).targets[0];
+    expect(target).toMatchObject({
+      shipTypeId: 37,
+      lengthMeters: 15,
+    });
+    expect(target.cogRad).toBeCloseTo((270 * Math.PI) / 180);
+    expect(target.headingRad).toBeCloseTo((268 * Math.PI) / 180);
     test.review.stop();
   });
 
