@@ -86,7 +86,7 @@ describe('WebSocket reconnect backoff', () => {
 });
 
 describe('WebSocket subscription messages', () => {
-  it('serializes the boat and destination boxes into one upstream subscription', () => {
+  it('serializes every requested box into one subscription message', () => {
     expect(
       createSubscriptionMessage(
         'test-key',

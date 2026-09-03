@@ -27,14 +27,8 @@ import * as geolib from 'geolib';
 import { SignalKApp, SignalKPlugin, PluginOptions } from './types/signalk';
 import { AisMessageType } from './types/aisstream';
 import { WebSocketManager, BoundingBox, WebSocketManagerCallbacks } from './websocket-manager';
-import { aisMessagePosition, buildSignalKDelta } from './ais-processor';
+import { buildSignalKDelta } from './ais-processor';
 import { DestinationAisReview, parseDestinationBbox } from './destination-review';
-
-const DESTINATION_MESSAGE_TYPES: AisMessageType[] = [
-  'PositionReport',
-  'StandardClassBPositionReport',
-  'ExtendedClassBPositionReport',
-];
 
 function toBoundingBox(bounds: { latitude: number; longitude: number }[]): BoundingBox {
   return [
@@ -76,22 +70,6 @@ function findPositionValue(update: unknown): { latitude: number; longitude: numb
   return null;
 }
 
-function boundingBoxContains(
-  bbox: BoundingBox,
-  position: { latitude: number; longitude: number },
-): boolean {
-  const north = Math.max(bbox[0].latitude, bbox[1].latitude);
-  const south = Math.min(bbox[0].latitude, bbox[1].latitude);
-  const east = Math.max(bbox[0].longitude, bbox[1].longitude);
-  const west = Math.min(bbox[0].longitude, bbox[1].longitude);
-  return (
-    position.latitude >= south &&
-    position.latitude <= north &&
-    position.longitude >= west &&
-    position.longitude <= east
-  );
-}
-
 type WebSocketManagerFactory = (
   apiKey: string,
   messageTypes: AisMessageType[],
@@ -120,8 +98,6 @@ function createPlugin(
   let oldLon: number | null = null;
   let oldLat: number | null = null;
   let boundingBox: BoundingBox | null = null;
-  let destinationBoundingBox: BoundingBox | null = null;
-  let destinationCallbacks: WebSocketManagerCallbacks | null = null;
   let wsManager: WebSocketManager | null = null;
   let destinationReview: DestinationAisReview | null = null;
 
@@ -145,38 +121,12 @@ function createPlugin(
     if (options.aidsToNavigationReport) messageTypes.push('AidsToNavigationReport');
     if (options.baseStationReport) messageTypes.push('BaseStationReport');
 
-    const streamMessageTypes = [...new Set([...messageTypes, ...DESTINATION_MESSAGE_TYPES])];
-
-    function syncStreamBoundingBoxes(): void {
-      if (!wsManager) return;
-      const boxes = [boundingBox, destinationBoundingBox].filter(
-        (box): box is BoundingBox => box !== null,
-      );
-      if (boxes.length === 0) {
-        wsManager.stop();
-      } else if (wsManager.isConnected || wsManager.isReconnecting) {
-        wsManager.updateBoundingBoxes(boxes);
-      } else {
-        wsManager.startBoundingBoxes(boxes);
-      }
-    }
-
     wsManager = websocketManagerFactory(
       options.apiKey,
-      streamMessageTypes,
+      messageTypes,
       options.refreshRate * 1000 + 60000,
       {
         onMessage: (aisMessage) => {
-          const position = aisMessagePosition(aisMessage);
-          if (
-            position &&
-            destinationBoundingBox &&
-            boundingBoxContains(destinationBoundingBox, position)
-          ) {
-            destinationCallbacks?.onMessage(aisMessage);
-          }
-          if (!position || !boundingBox || !boundingBoxContains(boundingBox, position)) return;
-
           app.debug('------------------------------------------------------------');
           app.debug(JSON.stringify(aisMessage, null, 2));
 
@@ -190,12 +140,10 @@ function createPlugin(
         },
         onStatus: (status) => {
           setStatus(status);
-          destinationCallbacks?.onStatus(status);
         },
         onDebug: (msg) => app.debug(msg),
         onError: (msg) => {
           app.error(msg);
-          destinationCallbacks?.onError(msg);
         },
       },
     );
@@ -205,26 +153,7 @@ function createPlugin(
         onDebug: (msg) => app.debug(`[destination] ${msg}`),
         onError: (msg) => app.error(`[destination] ${msg}`),
       },
-      (_apiKey, _messageTypes, _watchdogTimeoutMs, callbacks) => {
-        destinationCallbacks = callbacks;
-        return {
-          get isConnected() {
-            return wsManager?.isConnected ?? false;
-          },
-          start(nextBoundingBox) {
-            destinationBoundingBox = nextBoundingBox;
-            syncStreamBoundingBoxes();
-          },
-          stop() {
-            destinationBoundingBox = null;
-            syncStreamBoundingBoxes();
-          },
-          updateBoundingBox(nextBoundingBox) {
-            destinationBoundingBox = nextBoundingBox;
-            syncStreamBoundingBoxes();
-          },
-        };
-      },
+      websocketManagerFactory,
     );
 
     // Attempt immediate start using current position if available
@@ -240,7 +169,7 @@ function createPlugin(
             options.boundingBoxSize * 1000,
           ),
         );
-        syncStreamBoundingBoxes();
+        wsManager.start(boundingBox);
       }
     }
 
@@ -286,7 +215,7 @@ function createPlugin(
               boundingBox = toBoundingBox(
                 geolib.getBoundsOfDistance({ lat, lon }, options.boundingBoxSize * 1000),
               );
-              syncStreamBoundingBoxes();
+              wsManager.start(boundingBox);
               // Switch to normal refresh rate now that we're connected
               if (period !== options.refreshRate * 1000) {
                 app.debug(`Switching position subscription to ${options.refreshRate}s interval`);
@@ -306,12 +235,12 @@ function createPlugin(
               boundingBox = toBoundingBox(
                 geolib.getBoundsOfDistance({ lat, lon }, options.boundingBoxSize * 1000),
               );
-              syncStreamBoundingBoxes();
+              wsManager.updateBoundingBox(boundingBox);
             } else if (wsManager && !wsManager.isConnected && !wsManager.isReconnecting && messageTypes.length > 0) {
               boundingBox = toBoundingBox(
                 geolib.getBoundsOfDistance({ lat, lon }, options.boundingBoxSize * 1000),
               );
-              syncStreamBoundingBoxes();
+              wsManager.start(boundingBox);
               // Switch to normal refresh rate once reconnected
               if (period !== options.refreshRate * 1000) {
                 app.debug(`Switching position subscription to ${options.refreshRate}s interval`);
@@ -340,8 +269,6 @@ function createPlugin(
     }
     destinationReview?.stop();
     destinationReview = null;
-    destinationCallbacks = null;
-    destinationBoundingBox = null;
 
     oldLon = null;
     oldLat = null;

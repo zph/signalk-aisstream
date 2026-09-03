@@ -98,22 +98,23 @@ describe('plugin position subscription', () => {
 });
 
 describe('destination subscription routing', () => {
-  it('uses one upstream socket for both boxes without publishing remote targets as local traffic', () => {
+  it('uses a dedicated second upstream socket without publishing remote targets as local traffic', () => {
     vi.useFakeTimers();
     const { app } = createApp();
     app.getSelfPath = () => ({ longitude: -122.4, latitude: 37.8 });
-    const startBoundingBoxes = vi.fn();
-    const updateBoundingBoxes = vi.fn();
-    let callbacks: Parameters<WebSocketManagerFactory>[3] | undefined;
+    const starts = [vi.fn(), vi.fn()];
+    const stops = [vi.fn(), vi.fn()];
+    const callbacks: Array<Parameters<WebSocketManagerFactory>[3]> = [];
     const managerFactory = vi.fn<WebSocketManagerFactory>(
       (_apiKey, _messageTypes, _watchdogTimeoutMs, nextCallbacks) => {
-        callbacks = nextCallbacks;
+        const index = callbacks.length;
+        callbacks.push(nextCallbacks);
         return {
-          isConnected: true,
+          isConnected: index === 0,
           isReconnecting: false,
-          startBoundingBoxes,
-          updateBoundingBoxes,
-          stop: vi.fn(),
+          start: starts[index],
+          updateBoundingBox: vi.fn(),
+          stop: stops[index],
         } as never;
       },
     );
@@ -142,21 +143,21 @@ describe('destination subscription routing', () => {
     routeHandler?.({ query: { bbox: '[-71.4,41.4,-71.2,41.6]' } }, response);
     vi.advanceTimersByTime(0);
 
-    expect(managerFactory).toHaveBeenCalledTimes(1);
-    expect(updateBoundingBoxes).toHaveBeenCalledWith([
-      expect.any(Array),
+    expect(managerFactory).toHaveBeenCalledTimes(2);
+    expect(starts[0]).toHaveBeenCalledWith(expect.any(Array));
+    expect(starts[1]).toHaveBeenCalledWith(
       [
         { latitude: 41.6, longitude: -71.4 },
         { latitude: 41.4, longitude: -71.2 },
       ],
-    ]);
+    );
 
     const remote = structuredClone(positionReportMessage);
     remote.MetaData.Latitude = 41.5;
     remote.MetaData.Longitude = -71.3;
     delete remote.MetaData.latitude;
     delete remote.MetaData.longitude;
-    callbacks?.onMessage(remote);
+    callbacks[1]?.onMessage(remote);
     expect(app.handleMessage).not.toHaveBeenCalled();
 
     routeHandler?.({ query: { bbox: '[-71.4,41.4,-71.2,41.6]' } }, response);
@@ -171,9 +172,11 @@ describe('destination subscription routing', () => {
     local.MetaData.Longitude = -122.4;
     delete local.MetaData.latitude;
     delete local.MetaData.longitude;
-    callbacks?.onMessage(local);
+    callbacks[0]?.onMessage(local);
     expect(app.handleMessage).toHaveBeenCalledTimes(1);
     plugin.stop();
+    expect(stops[0]).toHaveBeenCalledOnce();
+    expect(stops[1]).toHaveBeenCalledOnce();
     vi.useRealTimers();
   });
 });
