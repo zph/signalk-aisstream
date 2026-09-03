@@ -36,9 +36,10 @@ every 30 seconds per vessel, for dwell and swing analysis. If the limit is reach
 from the requested area center are discarded first. The destination area uses a dedicated second
 upstream WebSocket, while the plugin keeps destination targets out of the primary Signal K vessel
 stream. Requests update that viewport subscription, are rate-limited to the AISStream replacement
-limit, and stop after five minutes without a request. The API key remains inside the plugin and is
-never returned to the client. An upstream HTTP 429 response uses `Retry-After` when provided,
-otherwise reconnecting backs off from one minute to fifteen minutes with jitter.
+limit, and do not report the replacement live until AISStream confirms it. The stream stops after
+five minutes without a request. The API key remains inside the plugin and is never returned to the
+client. An upstream HTTP 429 response uses `Retry-After` when provided, otherwise reconnecting backs
+off from one minute to fifteen minutes with jitter.
 
 ## Data source coverage
 https://aisstream.io/coverage

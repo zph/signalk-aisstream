@@ -61,6 +61,7 @@ export interface WebSocketManagerCallbacks {
   onStatus: (status: string) => void;
   onDebug: (message: string) => void;
   onError: (message: string) => void;
+  onSubscriptionConfirmed?: (boundingBoxes: BoundingBox[]) => void;
 }
 
 export type WebSocketFactory = (url: string, options: ClientOptions) => WebSocket;
@@ -81,6 +82,7 @@ export class WebSocketManager {
   private readonly callbacks: WebSocketManagerCallbacks;
   private readonly createSocket: WebSocketFactory;
   private boundingBoxes: BoundingBox[] = [];
+  private pendingConfirmations: BoundingBox[][] = [];
   private stopped = false;
 
   constructor(
@@ -137,6 +139,7 @@ export class WebSocketManager {
     this.nextReconnectDelay = null;
     this.suppressNextError = false;
     this.lastSubscriptionAt = 0;
+    this.pendingConfirmations = [];
     if (this.socket) {
       this.socket.close();
     }
@@ -155,6 +158,7 @@ export class WebSocketManager {
 
     this.socket = this.createSocket(AISSTREAM_URL, {
       handshakeTimeout: HANDSHAKE_TIMEOUT,
+      perMessageDeflate: true,
     });
 
     this.callbacks.onStatus('Connecting...');
@@ -204,14 +208,27 @@ export class WebSocketManager {
       );
       this.socket = null;
       this.clearSubscriptionTimer();
-      if (!event.wasClean && !this.stopped) {
-        this.scheduleReconnect();
-      }
+      this.pendingConfirmations = [];
+      if (!this.stopped) this.scheduleReconnect();
     });
 
     this.socket.addEventListener('message', (event) => {
       try {
-        const aisMessage = JSON.parse(String(event.data)) as AisStreamMessage;
+        const message = JSON.parse(String(event.data)) as unknown;
+        if (
+          typeof message === 'object' &&
+          message !== null &&
+          (message as { MessageType?: unknown }).MessageType === 'SubscriptionConfirmation'
+        ) {
+          const confirmed = this.pendingConfirmations.shift();
+          if (confirmed) this.callbacks.onSubscriptionConfirmed?.(confirmed);
+          this.resetWatchdog();
+          this.reconnectDelay = INITIAL_RECONNECT_DELAY;
+          this.rateLimitDelay = INITIAL_RATE_LIMIT_DELAY;
+          this.callbacks.onStatus('Connected');
+          return;
+        }
+        const aisMessage = message as AisStreamMessage;
         this.callbacks.onMessage(aisMessage);
         this.resetWatchdog();
         this.reconnectDelay = INITIAL_RECONNECT_DELAY;
@@ -235,6 +252,9 @@ export class WebSocketManager {
 
     this.callbacks.onDebug('Subscription Message: ' + JSON.stringify(subscription));
     this.socket.send(JSON.stringify(subscription));
+    this.pendingConfirmations.push(
+      this.boundingBoxes.map((box): BoundingBox => [{ ...box[0] }, { ...box[1] }]),
+    );
     this.lastSubscriptionAt = Date.now();
   }
 

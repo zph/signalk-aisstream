@@ -84,6 +84,7 @@ describe('destination AIS review', () => {
     expect(test.start).toHaveBeenCalledWith(BOX);
 
     test.callbacks().onStatus('Connected');
+    test.callbacks().onSubscriptionConfirmed?.([BOX]);
     test.callbacks().onMessage(positionReportMessage);
     test.advance(30_000);
     const moved = structuredClone(positionReportMessage);
@@ -170,6 +171,30 @@ describe('destination AIS review', () => {
     expect(test.updateBoundingBox).toHaveBeenCalledWith(next);
     expect(test.review.request(next).targets).toEqual([]);
     expect(test.review.request(BOX).targets).toHaveLength(1);
+    test.review.stop();
+    vi.useRealTimers();
+  });
+
+  it('keeps a replacement connecting until its own subscription is confirmed', () => {
+    vi.useFakeTimers();
+    const test = harness();
+    test.review.request(BOX);
+    test.callbacks().onSubscriptionConfirmed?.([BOX]);
+    expect(test.review.request(BOX).state).toBe('live');
+
+    const next: BoundingBox = [
+      { latitude: 43, longitude: -72 },
+      { latitude: 42, longitude: -71 },
+    ];
+    expect(test.review.request(next).state).toBe('connecting');
+    test.callbacks().onStatus('Connected');
+    test.callbacks().onMessage(positionReportMessage);
+    expect(test.review.request(next).state).toBe('connecting');
+
+    test.advance(1_100);
+    vi.advanceTimersByTime(1_100);
+    test.callbacks().onSubscriptionConfirmed?.([next]);
+    expect(test.review.request(next).state).toBe('live');
     test.review.stop();
     vi.useRealTimers();
   });

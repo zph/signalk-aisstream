@@ -117,4 +117,38 @@ describe('WebSocket subscription messages', () => {
       FilterMessageTypes: ['PositionReport', 'StandardClassBPositionReport'],
     });
   });
+
+  it('reports which bounding boxes a subscription confirmation activates', () => {
+    const socket = new FakeSocket();
+    const onMessage = vi.fn();
+    const onSubscriptionConfirmed = vi.fn();
+    const manager = new WebSocketManager(
+      'test-key',
+      ['PositionReport'],
+      120_000,
+      {
+        onMessage,
+        onStatus: vi.fn(),
+        onDebug: vi.fn(),
+        onError: vi.fn(),
+        onSubscriptionConfirmed,
+      },
+      () => socket as unknown as WebSocket,
+    );
+    const box = [
+      { latitude: 42, longitude: -72 },
+      { latitude: 41, longitude: -71 },
+    ] as const;
+    manager.start([box[0], box[1]]);
+    socket.readyState = WebSocket.OPEN;
+    socket.emit('open');
+    socket.emit(
+      'message',
+      { data: Buffer.from(JSON.stringify({ MessageType: 'SubscriptionConfirmation', Message: {} })) },
+    );
+
+    expect(onSubscriptionConfirmed).toHaveBeenCalledWith([[box[0], box[1]]]);
+    expect(onMessage).not.toHaveBeenCalled();
+    manager.stop();
+  });
 });

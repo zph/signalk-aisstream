@@ -280,12 +280,19 @@ export class DestinationAisReview {
       {
         onMessage: (message) => this.observe(message),
         onStatus: (status) => {
-          this.state = status.startsWith('Connected')
-            ? 'live'
-            : status.startsWith('Disconnected')
-              ? 'disconnected'
-              : 'connecting';
+          if (status.startsWith('Disconnected') || status.startsWith('Rate limited')) {
+            this.state = 'disconnected';
+          } else if (!status.startsWith('Connected')) {
+            this.state = 'connecting';
+          }
           this.error = undefined;
+        },
+        onSubscriptionConfirmed: (boundingBoxes) => {
+          const confirmed = boundingBoxes[0];
+          if (confirmed && sameBbox(this.bbox, confirmed) && this.pendingBbox === null) {
+            this.state = 'live';
+            this.error = undefined;
+          }
         },
         onDebug: callbacks.onDebug,
         onError: (message) => {

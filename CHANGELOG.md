@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Destination-area replacements now become live only after AISStream confirms the matching
+  subscription, so messages still arriving from the prior area cannot prematurely expose an empty
+  snapshot.
+- Clean upstream closes now reconnect, and WebSocket compression is explicitly requested.
+
 ## [0.9.1] - 2026-08-07
 
 ### Changed
