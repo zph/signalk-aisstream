@@ -5,7 +5,7 @@ import type { DestinationTargetCache } from './ais-target-cache';
 const HISTORY_MS = 30 * 60 * 1000;
 const HISTORY_SAMPLE_INTERVAL_MS = 30 * 1000;
 const TARGET_STALE_MS = 5 * 60 * 1000;
-const IDLE_MS = 5 * 60 * 1000;
+export const DESTINATION_IDLE_MS = 60 * 60 * 1000;
 const UPDATE_MIN_MS = 1100;
 const HANDOFF_OVERLAP_MS = 60 * 1000;
 const MAX_TARGETS = 10_000;
@@ -543,6 +543,6 @@ export class DestinationAisReview {
 
   private resetIdleTimer(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
-    this.idleTimer = setTimeout(() => this.stop(), IDLE_MS);
+    this.idleTimer = setTimeout(() => this.stop(), DESTINATION_IDLE_MS);
   }
 }

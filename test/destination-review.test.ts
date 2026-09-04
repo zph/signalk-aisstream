@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DestinationAisReview,
+  DESTINATION_IDLE_MS,
   DestinationManagerFactory,
   parseDestinationBbox,
 } from '../src/destination-review';
@@ -283,6 +284,27 @@ describe('destination AIS review', () => {
     expect(test.review.request(BOX).targets).toEqual([persisted]);
     expect(cache.within).toHaveBeenCalledWith(BOX, 1_000_000);
     test.review.stop();
+  });
+
+  it('keeps ingesting for sixty minutes after the last viewport request', () => {
+    vi.useFakeTimers();
+    const cache: DestinationTargetCache = {
+      remember: vi.fn(),
+      within: vi.fn(() => []),
+    };
+    const test = harness(cache);
+    test.review.request(BOX);
+
+    test.advance(DESTINATION_IDLE_MS - 1);
+    vi.advanceTimersByTime(DESTINATION_IDLE_MS - 1);
+    expect(test.stop).not.toHaveBeenCalled();
+    test.callbacks().onMessage(positionReportMessage);
+    expect(cache.remember).toHaveBeenCalledOnce();
+
+    test.advance(1);
+    vi.advanceTimersByTime(1);
+    expect(test.stop).toHaveBeenCalledOnce();
+    vi.useRealTimers();
   });
 
   it('retains at most one history sample every thirty seconds', () => {

@@ -12,6 +12,8 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - Require Node.js 22.13 or newer for the built-in SQLite runtime.
+- Keep the destination AISStream connection ingesting into SQLite for 60 minutes after the last
+  viewport request, instead of stopping after five minutes.
 
 ### Fixed
 
