@@ -6,6 +6,7 @@ import {
 } from '../src/destination-review';
 import { AisStreamMessage } from '../src/types/aisstream';
 import { BoundingBox, WebSocketManagerCallbacks } from '../src/websocket-manager';
+import type { DestinationTargetCache } from '../src/ais-target-cache';
 import {
   extendedClassBMessage,
   positionReportMessage,
@@ -17,7 +18,7 @@ const BOX: BoundingBox = [
   { latitude: 57, longitude: 12 },
 ];
 
-function harness() {
+function harness(cache?: DestinationTargetCache) {
   let connected = false;
   let now = 1_000_000;
   let callbacks: WebSocketManagerCallbacks | undefined;
@@ -49,6 +50,7 @@ function harness() {
     { onDebug: vi.fn(), onError: vi.fn() },
     managerFactory,
     () => now,
+    cache,
   );
   return {
     review,
@@ -256,6 +258,30 @@ describe('destination AIS review', () => {
     test.callbacks().onMessage(positionReportMessage);
     test.advance(5 * 60 * 1000 + 1);
     expect(test.review.request(BOX).targets).toEqual([]);
+    test.review.stop();
+  });
+
+  it('returns persisted targets in a newly requested viewport', () => {
+    const persisted = {
+      id: 'aisstream:211234560',
+      mmsi: '211234560',
+      position: { latitude: 57.5, longitude: 11.5 },
+      lastReportAtMs: 999_000,
+      history: {
+        firstSeenAtMs: 999_000,
+        sampleCount: 1,
+        center: { latitude: 57.5, longitude: 11.5 },
+        maxRadiusMeters: 0,
+      },
+    };
+    const cache: DestinationTargetCache = {
+      remember: vi.fn(),
+      within: vi.fn(() => [persisted]),
+    };
+    const test = harness(cache);
+
+    expect(test.review.request(BOX).targets).toEqual([persisted]);
+    expect(cache.within).toHaveBeenCalledWith(BOX, 1_000_000);
     test.review.stop();
   });
 

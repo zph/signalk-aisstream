@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Persist the latest position from both AISStream connections for one hour in a shared SQLite
+  R*Tree cache, allowing viewport requests to return previously observed targets immediately.
+
+### Changed
+
+- Require Node.js 22.13 or newer for the built-in SQLite runtime.
+
 ### Fixed
 
 - Ten-degree destination boxes are no longer rejected when endpoint subtraction introduces a

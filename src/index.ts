@@ -24,11 +24,17 @@ SOFTWARE.
 
 import haversine from 'haversine-distance';
 import * as geolib from 'geolib';
+import { join } from 'node:path';
 import { SignalKApp, SignalKPlugin, PluginOptions } from './types/signalk';
 import { AisMessageType } from './types/aisstream';
 import { WebSocketManager, BoundingBox, WebSocketManagerCallbacks } from './websocket-manager';
 import { buildSignalKDelta } from './ais-processor';
-import { DestinationAisReview, parseDestinationBbox } from './destination-review';
+import {
+  DestinationAisReview,
+  destinationTargetFromMessage,
+  parseDestinationBbox,
+} from './destination-review';
+import { AisTargetCache } from './ais-target-cache';
 
 function toBoundingBox(bounds: { latitude: number; longitude: number }[]): BoundingBox {
   return [
@@ -100,6 +106,7 @@ function createPlugin(
   let boundingBox: BoundingBox | null = null;
   let wsManager: WebSocketManager | null = null;
   let destinationReview: DestinationAisReview | null = null;
+  let targetCache: AisTargetCache | null = null;
 
   plugin.start = function (options: PluginOptions): void {
     app.debug('AisStream Plugin Started');
@@ -107,6 +114,18 @@ function createPlugin(
     if (!options.apiKey || !options.boundingBoxSize) {
       app.error('Missing required options: apiKey and boundingBoxSize are required.');
       return;
+    }
+
+    if (app.getDataDirPath) {
+      try {
+        targetCache = new AisTargetCache(
+          join(app.getDataDirPath(), 'ais-targets.sqlite'),
+          (message) => app.error(message),
+        );
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        app.error(`AIS target cache could not start; continuing in memory: ${detail}`);
+      }
     }
 
     const distanceLimit =
@@ -131,6 +150,8 @@ function createPlugin(
           app.debug(JSON.stringify(aisMessage, null, 2));
 
           const delta = buildSignalKDelta(aisMessage, plugin.id);
+          const target = destinationTargetFromMessage(aisMessage, Date.now());
+          if (target) targetCache?.remember(target);
           if (delta) {
             app.debug(JSON.stringify(delta, null, 2));
             app.handleMessage(plugin.id, delta);
@@ -154,6 +175,8 @@ function createPlugin(
         onError: (msg) => app.error(`[destination] ${msg}`),
       },
       websocketManagerFactory,
+      Date.now,
+      targetCache ?? undefined,
     );
 
     // Attempt immediate start using current position if available
@@ -269,6 +292,8 @@ function createPlugin(
     }
     destinationReview?.stop();
     destinationReview = null;
+    targetCache?.close();
+    targetCache = null;
 
     oldLon = null;
     oldLat = null;

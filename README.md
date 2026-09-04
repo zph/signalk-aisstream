@@ -33,7 +33,10 @@ GET /plugins/signalk-aisstream/api/destination?bbox=[west,south,east,north]
 The bounding box must span no more than ten degrees in either direction. The response contains up
 to 10,000 recent vessel positions plus bounded 30-minute movement summaries, sampled at most once
 every 30 seconds per vessel, for dwell and swing analysis. If the limit is reached, vessels farthest
-from the requested area center are discarded first. The destination area uses a dedicated second
+from the requested area center are discarded first. Reports from both the vessel and destination
+connections are retained for one hour in a plugin-scoped SQLite cache. Moving or reconnecting the
+viewport therefore does not discard previously observed targets, and cached targets are returned
+immediately while fresh reports resume. The destination area uses a dedicated second
 upstream WebSocket, while the plugin keeps destination targets out of the primary Signal K vessel
 stream. Requests update that viewport subscription, are rate-limited to the AISStream replacement
 limit, and do not report the replacement live until AISStream confirms it. The stream stops after
@@ -48,7 +51,7 @@ https://aisstream.io/coverage
 https://aisstream.io/documentation
 
 ### Prerequisites
-- Node.js 20+
+- Node.js 22.13+
 - npm
 
 ### Setup
@@ -71,6 +74,7 @@ npm test
 ```
 src/
   index.ts                  # Plugin entry point
+  ais-target-cache.ts       # Durable latest-target SQLite cache and spatial index
   ais-processor.ts          # AIS message processing and SignalK delta building
   websocket-manager.ts      # WebSocket connection lifecycle management
   lookups.ts                # AIS lookup tables (nav status, vessel types, AtoN types)

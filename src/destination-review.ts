@@ -1,5 +1,6 @@
 import { AisStreamMessage, AisMessageType } from './types/aisstream';
 import { BoundingBox, WebSocketManager, WebSocketManagerCallbacks } from './websocket-manager';
+import type { DestinationTargetCache } from './ais-target-cache';
 
 const HISTORY_MS = 30 * 60 * 1000;
 const HISTORY_SAMPLE_INTERVAL_MS = 30 * 1000;
@@ -150,6 +151,24 @@ function parseTarget(message: AisStreamMessage, now: number): Omit<TrackedTarget
   };
 }
 
+export function destinationTargetFromMessage(
+  message: AisStreamMessage,
+  now: number,
+): DestinationTarget | undefined {
+  const report = parseTarget(message, now);
+  if (!report) return undefined;
+  return {
+    ...report,
+    history: {
+      firstSeenAtMs: now,
+      sampleCount: 1,
+      medianSogMps: report.sogMps,
+      center: report.position,
+      maxRadiusMeters: 0,
+    },
+  };
+}
+
 function metersBetween(
   left: { latitude: number; longitude: number },
   right: { latitude: number; longitude: number },
@@ -289,6 +308,7 @@ export class DestinationAisReview {
     callbacks: Pick<WebSocketManagerCallbacks, 'onDebug' | 'onError'>,
     managerFactory: DestinationManagerFactory = (...args) => new WebSocketManager(...args),
     now: () => number = Date.now,
+    private readonly cache?: DestinationTargetCache,
   ) {
     this.apiKey = apiKey;
     this.callbacks = callbacks;
@@ -401,7 +421,9 @@ export class DestinationAisReview {
     if (!latest || now - latest.at >= HISTORY_SAMPLE_INTERVAL_MS) samples.push(sample);
     while (samples[0] && now - samples[0].at > HISTORY_MS) samples.shift();
     this.targets.delete(report.mmsi);
-    this.targets.set(report.mmsi, { ...prior, ...report, samples });
+    const tracked = { ...prior, ...report, samples };
+    this.targets.set(report.mmsi, tracked);
+    this.cache?.remember(summarize(tracked));
     while (this.targets.size > MAX_TARGETS) {
       const center = this.desiredBbox ? bboxCenter(this.desiredBbox) : undefined;
       let discard: string | undefined;
@@ -428,12 +450,24 @@ export class DestinationAisReview {
         this.targets.delete(mmsi);
       }
     }
+    const targets = new Map<string, DestinationTarget>();
+    for (const target of this.cache?.within(bbox, now) ?? []) {
+      targets.set(target.mmsi, target);
+    }
+    for (const target of this.targets.values()) {
+      if (!bboxContains(bbox, target.position)) continue;
+      const summarized = summarize(target);
+      const prior = targets.get(target.mmsi);
+      if (!prior || summarized.lastReportAtMs >= prior.lastReportAtMs) {
+        targets.set(target.mmsi, summarized);
+      }
+    }
     return {
       state: this.state,
       error: this.error,
-      targets: [...this.targets.values()]
-        .filter((target) => bboxContains(bbox, target.position))
-        .map(summarize),
+      targets: [...targets.values()]
+        .sort((left, right) => right.lastReportAtMs - left.lastReportAtMs)
+        .slice(0, MAX_TARGETS),
     };
   }
 
