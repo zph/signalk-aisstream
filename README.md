@@ -6,6 +6,44 @@ SignalK plugin to track the worlds vessels via websocket.
 - Using data source from https://aisstream.io/
 - Keeps the primary area centered on the vessel while offering a separate destination-review feed.
 
+<details>
+<summary><strong>How this fork differs from upstream</strong></summary>
+
+This repository is a fork of Karl-Erik Gustafsson's
+[signalk-aisstream](https://github.com/KEGustafsson/signalk-aisstream). Thank you to Karl-Erik and
+the upstream contributors for creating and maintaining the original plugin.
+
+I am happy to upstream changes that prove useful beyond this fork. I have been iterating here first
+to learn which ideas hold up and what shape makes sense before proposing them upstream.
+
+This inventory compares the fork with
+[`upstream/main` at `1a74eb1`](https://github.com/KEGustafsson/signalk-aisstream/commit/1a74eb12887ee7814c35872850bda9dc8dd55720).
+
+## Major features and changes
+
+| Difference | Commits |
+| --- | --- |
+| A destination-review API adds a temporary AIS area without moving the primary vessel-centered subscription | `652009a`, `f5fcb43` |
+| Destination snapshots include vessel details and bounded movement summaries, scale to 10,000 contacts, and discard the farthest contacts first when capped | `4a1bad7`, `e19889a`, `14a886c` |
+| A plugin-scoped SQLite cache preserves reports across viewport changes and keeps destination review warm for one hour | `37783f3`, `6fa68cc` |
+
+## API and integration improvements
+
+| Difference | Commits |
+| --- | --- |
+| Chartplotters can request destination coverage with a bounded `bbox`, including safely rounded ten-degree boxes | `652009a`, `99330b2` |
+| Subscription replacements overlap and are not reported live until AISStream confirms the handoff | `c787d52`, `8a7f877` |
+
+## Performance and reliability
+
+| Difference | Commits |
+| --- | --- |
+| Review requests share one managed AISStream connection instead of opening a connection per area | `302b9ed` |
+| Destination snapshots are bounded to the requested region, and destination messages are normalized before processing | `4a1bad7`, `28dedc3` |
+| Persisted targets are returned immediately during reconnects and viewport handoffs | `37783f3`, `6fa68cc` |
+
+</details>
+
 ![Plugin configuration](./doc/config.jpg)
 
 ## Steps to take plugin in use
